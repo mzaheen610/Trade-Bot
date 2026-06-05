@@ -197,6 +197,7 @@ def write_feature_config(
         "symbol": market.symbol,
         "interval": market.interval,
         "intraday_source": market.intraday_source,
+        "intraday_fallback_sources": list(market.intraday_fallback_sources),
         "daily_source": market.daily_source,
         "source_path": source_path,
         "feature_columns": feature_columns,

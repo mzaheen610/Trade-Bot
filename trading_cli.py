@@ -75,9 +75,9 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--interval", default="5m")
     parser.add_argument(
         "--intraday-source",
-        default="openchart",
+        default="jugaad",
         choices=["openchart", "jugaad", "yfinance-5m"],
-        help="Primary source is openchart; yfinance-5m is a short-history fallback.",
+        help="Primary source is jugaad; openchart is configured as fallback.",
     )
     parser.add_argument("--lookback-days", type=int, default=365)
     parser.add_argument("--normalization-window", type=int, default=200)

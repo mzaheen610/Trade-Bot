@@ -77,5 +77,5 @@ def test_feature_config_records_normalization_labels_and_versions(tmp_path):
     assert metadata["normalization"]["shift"] == 1
     assert metadata["labels"]["horizon"] == 3
     assert metadata["intraday_source"] == "jugaad"
+    assert metadata["intraday_fallback_sources"] == ["openchart"]
     assert "jugaad-data" in metadata["package_versions"]
-

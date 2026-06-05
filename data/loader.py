@@ -49,30 +49,61 @@ class MarketDataLoader:
         start: date | None = None,
         end: date | None = None,
     ) -> DownloadResult:
-        source = source or self.market.intraday_source
         output_path = self.intraday_path()
         if output_path.exists() and not force_refresh:
             df = pd.read_parquet(output_path)
-            return DownloadResult(output_path, source, len(df), refreshed=False)
+            return DownloadResult(
+                output_path,
+                source or self.market.intraday_source,
+                len(df),
+                refreshed=False,
+            )
 
         start = start or self.market.default_start
         end = end or self.market.default_end
 
+        sources = [source] if source else [
+            self.market.intraday_source,
+            *self.market.intraday_fallback_sources,
+        ]
+        sources = _dedupe_sources([candidate for candidate in sources if candidate])
+        errors: list[str] = []
+        for candidate_source in sources:
+            try:
+                df = self._download_intraday_from_source(
+                    candidate_source,
+                    start=start,
+                    end=end,
+                )
+                df = standardize_ohlcv(df, intraday=True, timezone=self.market.timezone)
+                if df.empty:
+                    raise DataUnavailableError(
+                        f"{candidate_source} returned no intraday bars for {self.market.symbol}"
+                    )
+                df.to_parquet(output_path)
+                return DownloadResult(output_path, candidate_source, len(df), refreshed=True)
+            except DataUnavailableError as exc:
+                errors.append(f"{candidate_source}: {exc}")
+
+        raise DataUnavailableError(
+            "No configured intraday source produced 5-minute bars. Tried "
+            f"{', '.join(sources)}. Details: " + " | ".join(errors)
+        )
+
+    def _download_intraday_from_source(
+        self,
+        source: str,
+        *,
+        start: date,
+        end: date,
+    ) -> pd.DataFrame:
         if source == "openchart":
-            df = self._download_openchart_intraday(start=start, end=end)
-        elif source == "jugaad":
-            df = self._download_jugaad_intraday(start=start, end=end)
-        elif source == "yfinance-5m":
-            df = self._download_yfinance_intraday(start=start, end=end)
-        else:
-            raise ValueError(f"Unknown intraday source: {source}")
-
-        df = standardize_ohlcv(df, intraday=True, timezone=self.market.timezone)
-        if df.empty:
-            raise DataUnavailableError(f"{source} returned no intraday bars for {self.market.symbol}")
-
-        df.to_parquet(output_path)
-        return DownloadResult(output_path, source, len(df), refreshed=True)
+            return self._download_openchart_intraday(start=start, end=end)
+        if source == "jugaad":
+            return self._download_jugaad_intraday(start=start, end=end)
+        if source == "yfinance-5m":
+            return self._download_yfinance_intraday(start=start, end=end)
+        raise ValueError(f"Unknown intraday source: {source}")
 
     def download_daily_context(
         self,
@@ -116,6 +147,13 @@ class MarketDataLoader:
                 "jugaad-data is not installed. Install dependencies or use "
                 "--intraday-source yfinance-5m for a smoke-test fallback."
             ) from exc
+
+        if self.market.interval.lower() not in {"1d", "d", "day"}:
+            if callable(getattr(nse, "stock_df", None)):
+                raise DataUnavailableError(
+                    "jugaad-data's documented stock_df API returns historical "
+                    "EOD stock rows, not 5-minute intraday OHLCV bars."
+                )
 
         candidate_names = (
             "stock_intraday_df",
@@ -240,6 +278,14 @@ def _call_jugaad_candidate(
     if missing_required:
         raise TypeError(f"Cannot call {candidate.__name__}; missing {missing_required}")
     return candidate(**kwargs)
+
+
+def _dedupe_sources(sources: list[str]) -> list[str]:
+    deduped: list[str] = []
+    for source in sources:
+        if source not in deduped:
+            deduped.append(source)
+    return deduped
 
 
 def standardize_ohlcv(

@@ -31,4 +31,4 @@ For serious training, put your historical 5-minute intraday file here before run
 
 CSV is also supported if you update `LOCAL_INTRADAY_FILE` in notebook 01. Required fields are `open`, `high`, `low`, `close`, `volume`, plus a DatetimeIndex or `datetime`/`date` column.
 
-Notebook 01 tries `openchart` if no file is present, but NSE charting availability can return empty data. The yfinance 5-minute fallback is only for smoke-testing the pipeline and is not enough for meaningful model training.
+Notebook 01 tries `jugaad-data` first, then `openchart` if no file is present. `jugaad-data` is the primary source from the plan, but its documented stock API is EOD-only; `openchart` is the intraday NSE charting fallback. The yfinance 5-minute fallback is only for smoke-testing the pipeline and is not enough for meaningful model training.

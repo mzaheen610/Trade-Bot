@@ -36,7 +36,8 @@ class MarketConfig:
     series: str = "EQ"
     interval: str = "5m"
     timezone: str = "Asia/Kolkata"
-    intraday_source: str = "openchart"
+    intraday_source: str = "jugaad"
+    intraday_fallback_sources: tuple[str, ...] = ("openchart",)
     daily_source: str = "yfinance"
     lookback_days: int = 365
 

@@ -6,7 +6,7 @@ import types
 import pandas as pd
 
 from config import MarketConfig, PathConfig
-from data.loader import MarketDataLoader
+from data.loader import DataUnavailableError, MarketDataLoader
 
 
 class DummyLoader(MarketDataLoader):
@@ -16,6 +16,30 @@ class DummyLoader(MarketDataLoader):
 
     def _download_yfinance_intraday(self, *, start, end):
         self.calls += 1
+        index = pd.date_range("2026-01-01 09:15", periods=2, freq="5min")
+        return pd.DataFrame(
+            {
+                "open": [100, 101],
+                "high": [101, 102],
+                "low": [99, 100],
+                "close": [100.5, 101.5],
+                "volume": [1000, 1100],
+            },
+            index=index,
+        )
+
+
+class FallbackLoader(MarketDataLoader):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.calls = []
+
+    def _download_jugaad_intraday(self, *, start, end):
+        self.calls.append("jugaad")
+        raise DataUnavailableError("jugaad EOD only")
+
+    def _download_openchart_intraday(self, *, start, end):
+        self.calls.append("openchart")
         index = pd.date_range("2026-01-01 09:15", periods=2, freq="5min")
         return pd.DataFrame(
             {
@@ -48,6 +72,24 @@ def test_download_intraday_uses_cache_without_force_refresh(tmp_path):
     assert second.refreshed is False
     assert loader.calls == 1
     assert first.path.exists()
+
+
+def test_download_intraday_tries_jugaad_then_openchart_fallback(tmp_path):
+    paths = PathConfig(
+        root=tmp_path,
+        raw_data_dir=tmp_path / "data" / "raw",
+        processed_data_dir=tmp_path / "data" / "processed",
+        artifact_dir=tmp_path / "artifacts",
+        model_artifact_dir=tmp_path / "artifacts" / "models",
+        report_dir=tmp_path / "reports",
+    )
+    loader = FallbackLoader(paths, MarketConfig())
+
+    result = loader.download_intraday()
+
+    assert result.source == "openchart"
+    assert result.rows == 2
+    assert loader.calls == ["jugaad", "openchart"]
 
 
 def test_openchart_reliance_uses_direct_equity_token(tmp_path, monkeypatch):

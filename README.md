@@ -25,9 +25,9 @@ trading-mvp run-all
 
 By default, downloads are cached and existing Parquet files are not overwritten. Pass `--force-refresh` to refresh raw data.
 
-The primary intraday adapter is `openchart`, which uses NSE India's charting platform and advertises intraday intervals such as `5m`. NSE charting availability is not guaranteed; if it returns no rows, use a historical intraday Parquet/CSV file from a broker/vendor and place it at the Drive path shown in `notebooks/01_data_download.ipynb`.
+The configured primary source is `jugaad-data`, following `plan.txt`. Its documented `stock_df` API returns historical EOD rows, not 5-minute intraday candles, so the downloader records that limitation and then tries `openchart` as a fallback for NSE charting intraday data. NSE charting availability is not guaranteed; if both paths fail, use a historical intraday Parquet/CSV file from a broker/vendor and place it at the Drive path shown in `notebooks/01_data_download.ipynb`.
 
-`jugaad-data` remains installed for NSE historical/EOD workflows, but the public package version may only expose EOD helpers such as `stock_df`. The yfinance 5-minute path is available only as an explicit short-history smoke-test fallback:
+The yfinance 5-minute path is available only as an explicit short-history smoke-test fallback:
 
 ```bash
 trading-mvp download
