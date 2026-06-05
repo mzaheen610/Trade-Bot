@@ -76,22 +76,50 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--intraday-source",
         default="jugaad",
-        choices=["openchart", "jugaad", "yfinance-5m"],
-        help="Primary source is jugaad; openchart is configured as fallback.",
+        choices=["local-csv", "openchart", "jugaad", "yfinance-5m"],
+        help="Primary source is jugaad; use local-csv for bundled historical CSV folders.",
+    )
+    parser.add_argument(
+        "--daily-source",
+        choices=["yfinance", "intraday-resample"],
+        default=None,
+        help="Defaults to intraday-resample for local-csv, otherwise yfinance.",
+    )
+    parser.add_argument(
+        "--local-data-path",
+        type=Path,
+        default=None,
+        help="CSV file or folder for --intraday-source local-csv.",
+    )
+    parser.add_argument(
+        "--local-data-pattern",
+        default="*.csv",
+        help="Glob pattern used when --local-data-path points to a folder.",
     )
     parser.add_argument("--lookback-days", type=int, default=365)
     parser.add_argument("--normalization-window", type=int, default=200)
     parser.add_argument("--confidence-threshold", type=float, default=0.65)
-    parser.add_argument("--volume-multiplier", type=float, default=1.5)
+    parser.add_argument(
+        "--volume-multiplier",
+        type=float,
+        default=None,
+        help="Defaults to 0 for local-csv without real volume, otherwise 1.5.",
+    )
 
 
 def build_config(args: argparse.Namespace) -> PipelineConfig:
+    daily_source = args.daily_source
+    if daily_source is None:
+        daily_source = "intraday-resample" if args.intraday_source == "local-csv" else "yfinance"
     market = MarketConfig(
         symbol=args.symbol,
         ticker=args.ticker,
         series=args.series,
         interval=args.interval,
         intraday_source=args.intraday_source,
+        daily_source=daily_source,
+        local_intraday_path=args.local_data_path,
+        local_intraday_pattern=args.local_data_pattern,
         lookback_days=args.lookback_days,
     )
     normalizer = NormalizerConfig(
@@ -100,7 +128,11 @@ def build_config(args: argparse.Namespace) -> PipelineConfig:
     )
     signals = SignalConfig(
         confidence_threshold=args.confidence_threshold,
-        volume_multiplier=args.volume_multiplier,
+        volume_multiplier=(
+            args.volume_multiplier
+            if args.volume_multiplier is not None
+            else (0.0 if args.intraday_source == "local-csv" else 1.5)
+        ),
     )
     return PipelineConfig(
         paths=PathConfig(),

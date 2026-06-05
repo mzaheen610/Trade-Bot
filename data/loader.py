@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -101,6 +102,8 @@ class MarketDataLoader:
             return self._download_openchart_intraday(start=start, end=end)
         if source == "jugaad":
             return self._download_jugaad_intraday(start=start, end=end)
+        if source == "local-csv":
+            return self._load_local_csv_intraday()
         if source == "yfinance-5m":
             return self._download_yfinance_intraday(start=start, end=end)
         raise ValueError(f"Unknown intraday source: {source}")
@@ -117,12 +120,17 @@ class MarketDataLoader:
             df = pd.read_parquet(output_path)
             return DownloadResult(output_path, self.market.daily_source, len(df), refreshed=False)
 
-        start = start or date(2000, 1, 1)
-        end = end or self.market.default_end
-        df = self._download_yfinance_daily(start=start, end=end)
+        if self.market.daily_source == "intraday-resample":
+            df = self._daily_context_from_intraday()
+        else:
+            start = start or date(2000, 1, 1)
+            end = end or self.market.default_end
+            df = self._download_yfinance_daily(start=start, end=end)
         df = standardize_ohlcv(df, intraday=False, timezone=self.market.timezone)
         if df.empty:
-            raise DataUnavailableError(f"yfinance returned no daily bars for {self.market.ticker}")
+            raise DataUnavailableError(
+                f"{self.market.daily_source} returned no daily bars for {self.market.ticker}"
+            )
 
         df.to_parquet(output_path)
         return DownloadResult(output_path, self.market.daily_source, len(df), refreshed=True)
@@ -138,6 +146,46 @@ class MarketDataLoader:
         if not path.exists():
             raise FileNotFoundError(f"Missing daily cache: {path}")
         return pd.read_parquet(path)
+
+    def _load_local_csv_intraday(self) -> pd.DataFrame:
+        files = self._local_intraday_files()
+        if not files:
+            raise DataUnavailableError(
+                "No local intraday CSV files found. Set --local-data-path to a "
+                "CSV file or folder such as data/BANK_NIFTY_data."
+            )
+
+        frames = [_read_local_ohlc_csv(path, symbol=self.market.symbol) for path in files]
+        frame = pd.concat(frames, axis=0).sort_index()
+        frame = frame[~frame.index.duplicated(keep="last")]
+        frame = _filter_market_hours(frame)
+        if frame.empty:
+            raise DataUnavailableError(f"Local CSV files contained no rows for {self.market.symbol}")
+        return _resample_ohlcv(frame, self.market.interval)
+
+    def _local_intraday_files(self) -> list[Path]:
+        local_path = self.market.local_intraday_path or _default_local_path(self.market.symbol)
+        if local_path is None:
+            return []
+        local_path = Path(local_path)
+        if local_path.is_file():
+            return [local_path]
+        if not local_path.exists():
+            return []
+        files = sorted(path for path in local_path.glob(self.market.local_intraday_pattern) if path.is_file())
+        return _prefer_yearly_files(files)
+
+    def _daily_context_from_intraday(self) -> pd.DataFrame:
+        intraday = self.load_intraday()
+        return intraday.resample("1D").agg(
+            {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }
+        ).dropna(subset=["open", "high", "low", "close"])
 
     def _download_jugaad_intraday(self, *, start: date, end: date) -> pd.DataFrame:
         try:
@@ -286,6 +334,106 @@ def _dedupe_sources(sources: list[str]) -> list[str]:
         if source not in deduped:
             deduped.append(source)
     return deduped
+
+
+def _default_local_path(symbol: str) -> Path | None:
+    normalized = symbol.upper().replace("_", "")
+    if normalized in {"BANKNIFTY", "BNF"}:
+        return Path("data") / "BANK_NIFTY_data"
+    if normalized in {"NIFTY", "NIFTY50"}:
+        return Path("data") / "NIFTY_data"
+    return None
+
+
+def _prefer_yearly_files(files: list[Path]) -> list[Path]:
+    yearly = [path for path in files if _has_single_year_suffix(path.stem)]
+    return yearly or files
+
+
+def _has_single_year_suffix(stem: str) -> bool:
+    years = re.findall(r"(?:19|20)\d{2}", stem)
+    return len(years) == 1 and stem.endswith(years[0])
+
+
+def _read_local_ohlc_csv(path: Path, *, symbol: str) -> pd.DataFrame:
+    frame = pd.read_csv(path)
+    rename_map = {
+        "Instrument": "instrument",
+        "Date": "date",
+        "Time": "time",
+        "Open": "open",
+        "High": "high",
+        "Low": "low",
+        "Close": "close",
+        "Volume": "volume",
+    }
+    frame = frame.rename(columns={column: rename_map.get(column, column) for column in frame.columns})
+    if "instrument" in frame.columns and symbol:
+        normalized_symbol = symbol.upper().replace("_", "")
+        instruments = frame["instrument"].astype(str).str.upper().str.replace("_", "", regex=False)
+        if normalized_symbol in set(instruments.unique()):
+            frame = frame[instruments == normalized_symbol]
+
+    if {"date", "time"}.issubset(frame.columns):
+        timestamps = pd.to_datetime(
+            frame["date"].astype(str) + " " + frame["time"].astype(str),
+            format="%Y%m%d %H:%M",
+            errors="coerce",
+        )
+    elif "datetime" in frame.columns:
+        timestamps = pd.to_datetime(frame["datetime"], errors="coerce")
+    else:
+        raise ValueError(f"{path} must include Date/Time columns or a datetime column")
+
+    output = frame.copy()
+    output.index = timestamps
+    output = output[~output.index.isna()]
+    output = output.dropna(subset=["open", "high", "low", "close"])
+    if "volume" not in output.columns:
+        output["volume"] = 1.0
+    output = output[["open", "high", "low", "close", "volume"]].apply(
+        pd.to_numeric,
+        errors="coerce",
+    )
+    output = output.dropna(subset=["open", "high", "low", "close"])
+    output["volume"] = output["volume"].fillna(1.0)
+    return output.sort_index()
+
+
+def _filter_market_hours(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame.between_time("09:15", "15:30", inclusive="both")
+
+
+def _resample_ohlcv(frame: pd.DataFrame, interval: str) -> pd.DataFrame:
+    rule = _pandas_interval(interval)
+    if rule == "1min":
+        return frame.copy()
+    resampled = frame.resample(
+        rule,
+        origin="start_day",
+        offset="9h15min",
+        label="right",
+        closed="right",
+    ).agg(
+        {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }
+    )
+    return resampled.dropna(subset=["open", "high", "low", "close"])
+
+
+def _pandas_interval(interval: str) -> str:
+    normalized = interval.lower().strip()
+    match = re.fullmatch(r"(\d+)\s*m(?:in(?:ute)?s?)?", normalized)
+    if match:
+        return f"{int(match.group(1))}min"
+    if normalized in {"minute", "1minute"}:
+        return "1min"
+    raise ValueError(f"Unsupported local CSV interval: {interval}")
 
 
 def standardize_ohlcv(

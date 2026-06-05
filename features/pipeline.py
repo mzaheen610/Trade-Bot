@@ -87,10 +87,14 @@ class FeatureBuilder:
         ]
         shifted = daily_features[context_columns].shift(1).dropna(how="all")
         shifted = shifted.reset_index().rename(columns={"index": "session_date"})
-        shifted["session_date"] = pd.to_datetime(shifted["session_date"])
+        shifted["session_date"] = (
+            pd.to_datetime(shifted["session_date"]).dt.normalize().astype("datetime64[ns]")
+        )
 
         intraday_reset = intraday.reset_index().rename(columns={"index": "timestamp"})
-        intraday_reset["session_date"] = pd.to_datetime(intraday_reset["timestamp"].dt.date)
+        intraday_reset["session_date"] = (
+            pd.to_datetime(intraday_reset["timestamp"]).dt.normalize().astype("datetime64[ns]")
+        )
         merged = pd.merge_asof(
             intraday_reset.sort_values("session_date"),
             shifted.sort_values("session_date"),
@@ -137,7 +141,8 @@ class FeatureEngineeringPipeline:
             candidate_columns,
         )
         frame = normalized.frame
-        lag_columns = self._add_lagged_features(frame, normalized.normalized_columns)
+        lagged_frame, lag_columns = self._lagged_features(frame, normalized.normalized_columns)
+        frame = pd.concat([frame, lagged_frame], axis=1)
         feature_columns = normalized.normalized_columns + lag_columns
         clean = frame.dropna(subset=feature_columns + ["label"]).copy()
         clean["label"] = clean["label"].astype(int)
@@ -171,14 +176,18 @@ class FeatureEngineeringPipeline:
             config_path,
         )
 
-    def _add_lagged_features(self, df: pd.DataFrame, columns: list[str]) -> list[str]:
+    def _lagged_features(self, df: pd.DataFrame, columns: list[str]) -> tuple[pd.DataFrame, list[str]]:
+        lagged_frames: list[pd.DataFrame] = []
         lag_columns: list[str] = []
         for lag in self.feature_config.lag_periods:
-            for column in columns:
-                lagged = f"{column}_lag_{lag}"
-                df[lagged] = df[column].shift(lag)
-                lag_columns.append(lagged)
-        return lag_columns
+            renamed = {column: f"{column}_lag_{lag}" for column in columns}
+            lagged = df[columns].shift(lag).rename(columns=renamed)
+            lagged_frames.append(lagged)
+            lag_columns.extend(renamed.values())
+
+        if not lagged_frames:
+            return pd.DataFrame(index=df.index), lag_columns
+        return pd.concat(lagged_frames, axis=1), lag_columns
 
 
 def write_feature_config(

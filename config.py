@@ -39,6 +39,8 @@ class MarketConfig:
     intraday_source: str = "jugaad"
     intraday_fallback_sources: tuple[str, ...] = ("openchart",)
     daily_source: str = "yfinance"
+    local_intraday_path: Path | None = None
+    local_intraday_pattern: str = "*.csv"
     lookback_days: int = 365
 
     @property

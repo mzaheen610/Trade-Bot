@@ -25,7 +25,18 @@ trading-mvp run-all
 
 By default, downloads are cached and existing Parquet files are not overwritten. Pass `--force-refresh` to refresh raw data.
 
-The configured primary source is `jugaad-data`, following `plan.txt`. Its documented `stock_df` API returns historical EOD rows, not 5-minute intraday candles, so the downloader records that limitation and then tries `openchart` as a fallback for NSE charting intraday data. NSE charting availability is not guaranteed; if both paths fail, use a historical intraday Parquet/CSV file from a broker/vendor and place it at the Drive path shown in `notebooks/01_data_download.ipynb`.
+For the historical CSV data currently in this workspace, use the local CSV source:
+
+```bash
+trading-mvp download --intraday-source local-csv --symbol BANKNIFTY --ticker BANKNIFTY --local-data-path data/BANK_NIFTY_data --force-refresh
+trading-mvp features --symbol BANKNIFTY --ticker BANKNIFTY --intraday-source local-csv
+trading-mvp train --symbol BANKNIFTY --ticker BANKNIFTY --intraday-source local-csv
+trading-mvp backtest --symbol BANKNIFTY --ticker BANKNIFTY --intraday-source local-csv
+```
+
+The local CSV parser supports files like `data/BANK_NIFTY_data/BNF_2012.csv` with `Instrument,Date,Time,Open,High,Low,Close`. It resamples 1-minute OHLC rows to the configured `5m` interval and adds synthetic volume when the source file has no volume column.
+
+The configured provider primary source is `jugaad-data`, following `plan.txt`. Its documented `stock_df` API returns historical EOD rows, not 5-minute intraday candles, so the downloader records that limitation and then tries `openchart` as a fallback for NSE charting intraday data. NSE charting availability is not guaranteed; for model training, prefer the local CSV path above or a broker/vendor intraday file.
 
 The yfinance 5-minute path is available only as an explicit short-history smoke-test fallback:
 
@@ -46,10 +57,10 @@ BASE = "/content/drive/MyDrive/trading_system/"
 
 Copy or clone this repository to `/content/drive/MyDrive/trading_system/TradingBot26/` before running the notebooks. The training notebook checkpoints LSTM and GRU models after every epoch and can resume from `*_latest.pt`.
 
-For real training, provide a 5-minute historical intraday file at:
+For Colab training with your current data, copy `BANK_NIFTY_data` or `NIFTY_data` into either the repo's `data/` folder or this Drive folder:
 
 ```text
-/content/drive/MyDrive/trading_system/data/raw/RELIANCE_NS_5m_source.parquet
+/content/drive/MyDrive/trading_system/data/BANK_NIFTY_data/
 ```
 
-The file can also be CSV if you update `LOCAL_INTRADAY_FILE` in notebook 01. It must include `open`, `high`, `low`, `close`, `volume`, and either a DatetimeIndex or a `datetime`/`date` column.
+Notebook 01 auto-detects those folders and builds the cached Parquet files used by the later notebooks.

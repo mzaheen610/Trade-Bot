@@ -23,12 +23,13 @@ The training notebook checkpoints LSTM and GRU models after every epoch and resu
 
 ## Data Requirement
 
-For serious training, put your historical 5-minute intraday file here before running notebook 01:
+For the current historical CSV data, copy one of these folders into the repo or Drive before running notebook 01:
 
 ```text
-/content/drive/MyDrive/trading_system/data/raw/RELIANCE_NS_5m_source.parquet
+/content/drive/MyDrive/trading_system/TradingBot26/data/BANK_NIFTY_data/
+/content/drive/MyDrive/trading_system/data/BANK_NIFTY_data/
 ```
 
-CSV is also supported if you update `LOCAL_INTRADAY_FILE` in notebook 01. Required fields are `open`, `high`, `low`, `close`, `volume`, plus a DatetimeIndex or `datetime`/`date` column.
+`NIFTY_data` works the same way. Notebook 01 auto-detects `BANK_NIFTY_data` first, then `NIFTY_data`, parses files like `BNF_2012.csv`, resamples 1-minute OHLC rows to 5-minute candles, and creates synthetic volume because the source files do not include volume.
 
-Notebook 01 tries `jugaad-data` first, then `openchart` if no file is present. `jugaad-data` is the primary source from the plan, but its documented stock API is EOD-only; `openchart` is the intraday NSE charting fallback. The yfinance 5-minute fallback is only for smoke-testing the pipeline and is not enough for meaningful model training.
+Notebook 01 tries `jugaad-data` first, then `openchart` only if no local file/folder is present. The yfinance 5-minute fallback is only for smoke-testing the pipeline and is not enough for meaningful model training.
