@@ -32,3 +32,13 @@ trading-mvp download --intraday-source yfinance-5m
 ```
 
 `feature_config.json` is written under `artifacts/` and stores feature order, label settings, normalization settings, data source metadata, and package versions.
+
+## Colab Training
+
+Colab notebooks live in `notebooks/` and are designed to persist every dataset, checkpoint, model, and report under:
+
+```python
+BASE = "/content/drive/MyDrive/trading_system/"
+```
+
+Copy or clone this repository to `/content/drive/MyDrive/trading_system/TradingBot26/` before running the notebooks. The training notebook checkpoints LSTM and GRU models after every epoch and can resume from `*_latest.pt`.
