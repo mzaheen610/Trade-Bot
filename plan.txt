@@ -1,0 +1,247 @@
+Perfect. I have everything I need. Let me put together a comprehensive blueprint.Here's the full architecture blueprint — broken into system layers, then the ML pipeline, then the UI spec.Now here's the full detailed spec your coding model needs, section by section.
+
+---
+
+## Data strategy
+
+**Recommended source: Zerodha Kite + `yfinance` as fallback.** Even for a free start, open a Zerodha demat account — the Kite Connect API (₹2,000/month) gives you clean 1-minute OHLCV with corporate-action-adjusted data going back to ~2007, and critically, the same API doubles as your live feed later. For historical bulk download of 10–20 years of daily/weekly data, use `nsepython` or `jugaad-data` (NSE's own unofficial data), both free and India-specific. Avoid raw `yfinance` for NSE — it has unadjusted prices and gaps around corporate actions.
+
+Store everything in **Parquet files** organized by ticker and timeframe (`data/NSE_RELIANCE_1m_2020.parquet`). This is the standard for backtesting performance at scale — Pandas reads these 10× faster than CSV.
+
+---
+
+## Feature engineering (what actually works)
+
+The rule-based community uses a well-validated core set. Build these into a `FeatureBuilder` class:
+
+**Price-based:** EMA(9), EMA(21), EMA(200) for trend regime; RSI(14); MACD(12,26,9); Bollinger Bands(20,2); ATR(14) for volatility sizing; Supertrend(10,3) — very popular in Indian retail algo trading.
+
+**Volume-based:** VWAP (intraday anchor); Relative volume (today's vol vs 20-day avg at same time); On-Balance Volume; delivery percentage from NSE (surprisingly predictive for swing).
+
+**Multi-timeframe stacking:** For each 1-minute candle, compute features at 1m, 5m, and 15m and concatenate as a single feature vector. Add boolean flags like `ema9_above_ema21_on_15m` — these act as regime filters and dramatically reduce false signals.
+
+**Target label construction:** Use a forward-looking window. For a candle at time `t`, label = `BUY` if price rises >0.5% within next 15 candles without hitting a 0.3% stop, else `SELL`/`HOLD`. This is the standard approach used by most published NSE ML papers.
+
+---
+
+## The three models — shared pipeline
+
+All three models consume the **same feature matrix** and output a 3-class probability vector `[P_buy, P_sell, P_hold]`.
+
+**LSTM:** Input shape `(lookback=60, n_features)`. Two stacked LSTM layers (128, 64 units), dropout 0.3, dense head with softmax. Good at capturing sequential dependencies — opening range breakout patterns, gap-up continuation.
+
+**GRU:** Same input shape, but single GRU layer (128 units) + dense. Trains faster, often matches LSTM on short intraday timeframes. Use this as your "quick signal" model.
+
+**LightGBM:** Flattened feature vector (no sequence — just the current candle's full feature set). Add lagged features manually (t-1, t-5, t-10). Excellent at regime classification — whether the market is trending, ranging, or volatile. This model acts as a **meta-filter** for the neural nets.
+
+**Shared pipeline components your coding model needs:**
+
+```
+DataLoader → FeatureBuilder → Normalizer (per-ticker rolling z-score, 
+not global — avoids lookahead) → SequenceBuilder → Train/Val/Test split 
+(time-based, never random shuffle — that's data leakage)
+```
+
+---
+
+## Backtesting framework
+
+Use **`vectorbt`** (not `backtrader` — it's vectorized, handles multi-ticker, and produces beautiful HTML reports). For walk-forward optimization, implement a custom `WalkForwardOptimizer` class:
+
+- Split the 10–20 years into rolling windows: 18 months train, 6 months test, step by 3 months
+- Retrain each model on each training window, evaluate on the out-of-sample test window
+- This is how professional quants validate — not a single backtest
+
+**Key metrics to report per model:** Sharpe ratio, Calmar ratio, max drawdown, win rate, avg profit/loss ratio, number of trades per day. A Sharpe >1.5 and max drawdown <15% is a realistic target for intraday NSE.
+
+**India-specific backtest realism checklist:**
+- Apply 0.03% brokerage + 0.1% STT (Securities Transaction Tax) on sell side + SEBI charges — ignoring these inflates returns by ~0.2% per trade which destroys profitability at high frequency
+- Apply realistic slippage: 0.05% per trade for Nifty 50 stocks, 0.1–0.15% for Nifty 500 mid-caps
+- Enforce NSE trading hours: 9:15 AM – 3:30 PM IST; no trades in first 5 minutes (opening auction noise)
+- Mark all market holidays from NSE calendar
+
+---
+
+## Signal fusion (the strategy layer)
+
+Don't just take the LSTM signal at face value. Stack the three model outputs through a **rule-based filter**:
+
+1. **LightGBM says "trending regime"** → allow LSTM/GRU BUY signals through
+2. **LightGBM says "ranging regime"** → suppress breakout signals, allow mean-reversion signals
+3. **Signal must have consensus ≥ 2/3 models** with confidence > 0.65 to become actionable
+4. **Volume confirmation:** current volume must be > 1.5× its 20-period average at signal time
+
+This ensemble + filter approach is what separates backtested strategies that work in live markets from those that don't.
+
+---
+
+## Tech stack for the coding model
+
+| Component | Library |
+|---|---|
+| Data pipeline | `pandas`, `polars` (fast), `nsepython` |
+| Feature engineering | `ta-lib` or `pandas-ta` |
+| LSTM/GRU | `PyTorch` (preferred over Keras for flexibility) |
+| LightGBM | `lightgbm` |
+| Backtesting | `vectorbt` |
+| Walk-forward | Custom class on top of `vectorbt` |
+| Backend API | `FastAPI` (serve live signals + historical data) |
+| Live data feed | Kite WebSocket → `asyncio` consumer |
+| Frontend | `React` + `Lightweight Charts` (TradingView's open-source lib — this is the canonical choice for financial charts) |
+| Alerts | `python-telegram-bot` |
+| Storage | `Parquet` for historical, `SQLite` or `Redis` for live signal state |
+
+---
+
+## UI specification
+
+The web app has three views:
+
+**Live chart view** — the main screen. Full-width candlestick chart (Lightweight Charts). Overlays: EMA9, EMA21, VWAP. On top: BUY (green triangle up) / SELL (red triangle down) markers at the exact candle where the signal fired, sized by confidence. A side panel shows: current signal, confidence %, individual model votes, time to next signal check. Timeframe toggle: 1m / 5m / 15m.
+
+**Screener view** — a table of all Nifty 50/500 stocks with their current signal status, sorted by confidence. Clicking a row opens it in the chart view.
+
+**Backtest viewer** — equity curve chart, per-model performance comparison table, drawdown chart, full trade log with entry/exit/PnL per trade.
+
+---
+
+## What to hand to your coding model
+
+Structure the repository like this:
+
+```
+trading-system/
+├── data/           # Parquet files, raw downloads
+├── features/       # FeatureBuilder, Normalizer, SequenceBuilder
+├── models/         # lstm.py, gru.py, lgbm.py, ensemble.py
+├── backtest/       # WalkForwardOptimizer, metrics, costs
+├── strategy/       # SignalFuser, RiskEngine
+├── api/            # FastAPI app, WebSocket feed handler
+├── frontend/       # React app (Lightweight Charts)
+└── alerts/         # Telegram bot
+```
+
+Tell your coding model to build and test each layer independently before wiring them together — the feature pipeline first (most bugs live here), then the models, then the backtest, then the API, then the UI last.
+
+One important note: this is genuinely complex enough that I'd recommend starting with **one stock (Reliance or TCS), one timeframe (5-minute), one model (LightGBM — fastest to iterate on)** to validate the full pipeline end-to-end before scaling up. The architecture above is designed to scale horizontally once the single-stock pipeline is proven.
+
+Good call — Colab is the right move for training. A few important constraints to design around:
+
+**The core problem with Colab for this project:**
+- Sessions disconnect after 90 minutes of inactivity (free) or 24 hours (Pro)
+- Runtime resets wipe everything in `/content` — your trained model is gone unless you save it
+- You can't run a persistent WebSocket listener or a live API server there
+
+So the architecture splits cleanly into two environments:---
+
+## The golden rule: Google Drive is your persistence layer
+
+Everything Colab produces must be saved to Drive before the session ends. Tell your coding model to mount Drive at the very top of every notebook:
+
+```python
+from google.colab import drive
+drive.mount('/content/drive')
+
+BASE = '/content/drive/MyDrive/trading_system/'
+MODEL_DIR = BASE + 'models/'
+DATA_DIR  = BASE + 'data/'
+LOG_DIR   = BASE + 'logs/'
+```
+
+Every path in the codebase goes through these constants — never a bare `/content/` path.
+
+---
+
+## Notebook structure (what to tell your coding model to build)
+
+Split training into **four numbered notebooks**, not one monolith. Colab sessions are too fragile for a 3-hour single run:
+
+**`01_data_download.ipynb`** — downloads historical OHLCV for all target tickers, adjusts for corporate actions, saves Parquet to Drive. Run once, rarely again. No GPU needed — run on CPU runtime.
+
+**`02_feature_engineering.ipynb`** — loads raw Parquets, builds the full feature matrix (all indicators, multi-TF stacking, label generation), saves processed feature Parquets to Drive. Also a one-time + periodic run. No GPU needed.
+
+**`03_train_models.ipynb`** — the GPU notebook. Loads feature Parquets from Drive, trains LSTM → GRU → LightGBM sequentially (or in separate cells so you can resume), checkpoints after every epoch with `torch.save(model.state_dict(), MODEL_DIR + 'lstm_epoch_{e}.pt')`, saves final `.pt` and `.pkl` files to Drive.
+
+**`04_backtest.ipynb`** — loads trained models + feature data, runs walk-forward backtest with `vectorbt`, generates HTML performance reports saved to Drive. CPU runtime is fine.
+
+---
+
+## Crash-proofing the training notebook
+
+This is the most important part. Tell your coding model to implement these patterns:
+
+**Epoch checkpointing with resume logic:**
+```python
+# At start of training, check if a checkpoint exists
+import os
+start_epoch = 0
+ckpt_path = MODEL_DIR + 'lstm_latest.pt'
+if os.path.exists(ckpt_path):
+    checkpoint = torch.load(ckpt_path)
+    model.load_state_dict(checkpoint['model_state'])
+    optimizer.load_state_dict(checkpoint['optimizer_state'])
+    start_epoch = checkpoint['epoch'] + 1
+    print(f"Resumed from epoch {start_epoch}")
+
+# At end of each epoch, save
+torch.save({
+    'epoch': epoch,
+    'model_state': model.state_dict(),
+    'optimizer_state': optimizer.state_dict(),
+    'val_loss': val_loss,
+}, ckpt_path)
+```
+
+**Colab keep-alive** (prevents the 90-min idle disconnect during long training):
+```javascript
+// Run this in the browser console when training starts
+function keepAlive() {
+  document.querySelector("colab-toolbar-button#connect").click();
+}
+setInterval(keepAlive, 60000);
+```
+
+**Periodic Drive flush** — after every 5 epochs, explicitly flush the Drive buffer:
+```python
+if epoch % 5 == 0:
+    import shutil
+    shutil.copy(ckpt_path, MODEL_DIR + f'lstm_epoch_{epoch}.pt')
+```
+
+---
+
+## GPU-specific training tips for Colab
+
+Tell your coding model to always:
+
+- Use `device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')` and move model + tensors to device
+- Set `pin_memory=True, num_workers=2` in DataLoader for faster GPU feeding
+- Use `torch.cuda.empty_cache()` between training the three models — Colab's T4 has 15GB but your feature matrices can be large
+- Use **mixed precision** (`torch.cuda.amp.autocast()`) — cuts memory by ~40% and speeds training by 30–50% with no accuracy loss on this type of task
+
+For LightGBM, pass `device='gpu'` in the params dict — Colab's CUDA supports it natively.
+
+---
+
+## The model → local handoff
+
+Once training is done, your local inference server loads models like:
+
+```python
+# Local FastAPI server at startup
+model = LSTMModel(input_size=N_FEATURES, ...)
+model.load_state_dict(torch.load('models/lstm_final.pt', map_location='cpu'))
+model.eval()
+
+lgbm_model = lgb.Booster(model_file='models/lgbm_final.pkl')
+scaler = joblib.load('models/scaler.pkl')
+feature_config = json.load(open('models/feature_config.json'))
+```
+
+The `feature_config.json` is critical — it stores the exact list and order of features the model was trained on, so the live inference pipeline builds features in exactly the same way. This is the most common source of silent bugs in production.
+
+---
+
+## Recommended Colab tier
+
+Free Colab will work for initial experiments but you'll hit GPU quota limits during walk-forward training (which trains the model dozens of times). **Colab Pro (₹880/month)** gives you priority T4/V100 access and 24-hour sessions — worth it for this project. You don't need Pro+ unless you're training on the full Nifty 500 universe simultaneously.
