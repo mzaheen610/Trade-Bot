@@ -36,7 +36,7 @@ class MarketConfig:
     series: str = "EQ"
     interval: str = "5m"
     timezone: str = "Asia/Kolkata"
-    intraday_source: str = "jugaad"
+    intraday_source: str = "openchart"
     daily_source: str = "yfinance"
     lookback_days: int = 365
 
@@ -118,4 +118,3 @@ class PipelineConfig:
             for key, value in data[group].items():
                 data[group][key] = str(value)
         return data
-

@@ -10,6 +10,10 @@ import pandas as pd
 
 from config import MarketConfig, PathConfig
 
+OPENCHART_EQUITY_TOKENS = {
+    "RELIANCE": "2885",
+}
+
 
 class DataUnavailableError(RuntimeError):
     """Raised when the configured market-data source cannot produce OHLCV bars."""
@@ -54,7 +58,9 @@ class MarketDataLoader:
         start = start or self.market.default_start
         end = end or self.market.default_end
 
-        if source == "jugaad":
+        if source == "openchart":
+            df = self._download_openchart_intraday(start=start, end=end)
+        elif source == "jugaad":
             df = self._download_jugaad_intraday(start=start, end=end)
         elif source == "yfinance-5m":
             df = self._download_yfinance_intraday(start=start, end=end)
@@ -136,10 +142,42 @@ class MarketDataLoader:
 
         raise DataUnavailableError(
             "The installed jugaad-data package does not expose a historical "
-            "intraday OHLCV dataframe function. Keep this source as primary "
-            "when available, or run with --intraday-source yfinance-5m only for "
-            "a short smoke test."
+            "intraday OHLCV dataframe function. Use --intraday-source openchart "
+            "for NSE charting data, or --intraday-source yfinance-5m only for a "
+            "short smoke test."
         )
+
+    def _download_openchart_intraday(self, *, start: date, end: date) -> pd.DataFrame:
+        try:
+            from openchart import NSEData
+        except ImportError as exc:
+            raise DataUnavailableError(
+                "openchart is not installed. Run `pip install -e .` again, or "
+                "use an uploaded historical intraday file."
+            ) from exc
+
+        symbol = f"{self.market.symbol}-{self.market.series}"
+        try:
+            client = NSEData()
+            start_dt = datetime.combine(start, datetime.min.time())
+            end_dt = datetime.combine(end, datetime.max.time())
+            token = OPENCHART_EQUITY_TOKENS.get(self.market.symbol.upper())
+            if token:
+                return client.historical_direct(
+                    token=token,
+                    symbol=symbol,
+                    symbol_type="Equity",
+                    start=start_dt,
+                    end=end_dt,
+                    interval=self.market.interval,
+                )
+            return client.historical(symbol, "EQ", start_dt, end_dt, self.market.interval)
+        except Exception as exc:
+            raise DataUnavailableError(
+                f"openchart could not fetch {symbol} {self.market.interval} data. "
+                "NSE charting availability varies; try a shorter lookback or use "
+                "an uploaded historical intraday Parquet/CSV file."
+            ) from exc
 
     def _download_yfinance_intraday(self, *, start: date, end: date) -> pd.DataFrame:
         import yfinance as yf
@@ -281,4 +319,3 @@ def _normalize_index(index: pd.DatetimeIndex, *, timezone: str, intraday: bool) 
 
 def _safe_name(value: str) -> str:
     return value.replace(".", "_").replace("/", "_").replace(" ", "_")
-

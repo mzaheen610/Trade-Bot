@@ -217,7 +217,15 @@ def write_feature_config(
             "include_daily_context": features.include_daily_context,
         },
         "package_versions": _package_versions(
-            ["jugaad-data", "yfinance", "pandas", "numpy", "lightgbm", "scikit-learn"]
+            [
+                "openchart",
+                "jugaad-data",
+                "yfinance",
+                "pandas",
+                "numpy",
+                "lightgbm",
+                "scikit-learn",
+            ]
         ),
     }
     path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
@@ -231,4 +239,3 @@ def _package_versions(packages: list[str]) -> dict[str, str | None]:
         except importlib.metadata.PackageNotFoundError:
             versions[package] = None
     return versions
-

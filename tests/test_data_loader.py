@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+import types
+
 import pandas as pd
 
 from config import MarketConfig, PathConfig
@@ -46,3 +49,41 @@ def test_download_intraday_uses_cache_without_force_refresh(tmp_path):
     assert loader.calls == 1
     assert first.path.exists()
 
+
+def test_openchart_reliance_uses_direct_equity_token(tmp_path, monkeypatch):
+    calls = {}
+
+    class FakeNSEData:
+        def historical_direct(self, **kwargs):
+            calls.update(kwargs)
+            index = pd.date_range("2026-01-01 09:15", periods=2, freq="5min")
+            return pd.DataFrame(
+                {
+                    "Open": [100, 101],
+                    "High": [101, 102],
+                    "Low": [99, 100],
+                    "Close": [100.5, 101.5],
+                    "Volume": [1000, 1100],
+                },
+                index=index,
+            )
+
+    fake_module = types.SimpleNamespace(NSEData=FakeNSEData)
+    monkeypatch.setitem(sys.modules, "openchart", fake_module)
+
+    paths = PathConfig(
+        root=tmp_path,
+        raw_data_dir=tmp_path / "data" / "raw",
+        processed_data_dir=tmp_path / "data" / "processed",
+        artifact_dir=tmp_path / "artifacts",
+        model_artifact_dir=tmp_path / "artifacts" / "models",
+        report_dir=tmp_path / "reports",
+    )
+    loader = MarketDataLoader(paths, MarketConfig(intraday_source="openchart"))
+
+    result = loader.download_intraday(source="openchart")
+
+    assert result.rows == 2
+    assert calls["token"] == "2885"
+    assert calls["symbol"] == "RELIANCE-EQ"
+    assert calls["symbol_type"] == "Equity"

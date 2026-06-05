@@ -75,9 +75,9 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--interval", default="5m")
     parser.add_argument(
         "--intraday-source",
-        default="jugaad",
-        choices=["jugaad", "yfinance-5m"],
-        help="Primary source is jugaad; yfinance-5m is a short-history fallback.",
+        default="openchart",
+        choices=["openchart", "jugaad", "yfinance-5m"],
+        help="Primary source is openchart; yfinance-5m is a short-history fallback.",
     )
     parser.add_argument("--lookback-days", type=int, default=365)
     parser.add_argument("--normalization-window", type=int, default=200)
@@ -197,4 +197,3 @@ def run_backtest(config: PipelineConfig) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
