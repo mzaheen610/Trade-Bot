@@ -40,6 +40,11 @@ class LightGBMModel:
             f"lgbm_{self.market.ticker.replace('.', '_')}_{self.market.interval}_metadata.json"
         )
 
+    def metrics_path(self) -> Path:
+        return self.paths.report_dir / (
+            f"{_safe_name(self.market.ticker)}_{self.market.interval}_model_metrics.json"
+        )
+
     def train(
         self,
         df: pd.DataFrame,
@@ -104,7 +109,7 @@ class LightGBMModel:
 
         model_path = self.model_path()
         metadata_path = self.metadata_path()
-        metrics_path = self.paths.report_dir / "model_metrics.json"
+        metrics_path = self.metrics_path()
         joblib.dump(model, model_path)
         metadata = {
             "ticker": self.market.ticker,
@@ -123,15 +128,15 @@ class LightGBMModel:
             "test_end": str(splits.test.index.max()),
         }
         metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
-        metrics_path.write_text(
-            json.dumps(
-                {
-                    "validation": validation_metrics,
-                    "test": test_metrics,
-                },
-                indent=2,
-                sort_keys=True,
-            ),
+        metrics_payload = {
+            "ticker": self.market.ticker,
+            "interval": self.market.interval,
+            "validation": validation_metrics,
+            "test": test_metrics,
+        }
+        metrics_path.write_text(json.dumps(metrics_payload, indent=2, sort_keys=True), encoding="utf-8")
+        (self.paths.report_dir / "model_metrics.json").write_text(
+            json.dumps(metrics_payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
@@ -197,3 +202,6 @@ def _align_probabilities(classes: np.ndarray, probabilities: np.ndarray) -> np.n
         aligned[:, int(class_id)] = probabilities[:, source_index]
     return aligned
 
+
+def _safe_name(value: str) -> str:
+    return value.replace(".", "_").replace("/", "_").replace(" ", "_")

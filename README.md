@@ -21,6 +21,7 @@ trading-mvp features
 trading-mvp train
 trading-mvp backtest
 trading-mvp run-all
+trading-mvp report-summary
 ```
 
 By default, downloads are cached and existing Parquet files are not overwritten. Pass `--force-refresh` to refresh raw data.
@@ -55,6 +56,8 @@ trading-mvp download --intraday-source yfinance-5m
 ```
 
 `feature_config.json` is written under `artifacts/` and stores feature order, label settings, normalization settings, data source metadata, and package versions.
+
+Training and backtest outputs are written under `reports/`. Ticker-specific files are kept so runs do not overwrite each other, for example `reports/NIFTY_5m_model_metrics.json`, `reports/NIFTY_5m_metrics.json`, `reports/NIFTY_5m_trades.csv`, and `reports/NIFTY_5m_monthly_metrics.csv`. The unprefixed files such as `reports/model_metrics.json` and `reports/trades.csv` are only the latest-run aliases.
 
 ## Colab Training
 

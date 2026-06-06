@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -31,6 +32,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "report-summary":
+            run_report_summary(PathConfig())
+            return 0
         config = build_config(args)
         if args.command == "download":
             run_download(config, force_refresh=args.force_refresh)
@@ -65,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="Overwrite cached raw Parquet files.",
             )
+    subparsers.add_parser("report-summary", help="Print available per-model metrics and backtest reports.")
     return parser
 
 
@@ -227,10 +232,95 @@ def run_backtest(config: PipelineConfig) -> None:
         equity_curve=result.equity_curve,
         metrics=metrics,
         monthly=monthly,
+        prefix=f"{config.market.ticker}_{config.market.interval}",
     )
     print(f"metrics: {paths['metrics']}")
     print(f"monthly: {paths['monthly']}")
     print(f"trades: {paths['trades']} count={metrics['num_trades']}")
+
+
+def run_report_summary(paths: PathConfig) -> None:
+    rows = []
+    for metadata_path in sorted(paths.model_artifact_dir.glob("lgbm_*_metadata.json")):
+        metadata = _read_json(metadata_path)
+        ticker = metadata.get("ticker", metadata_path.stem)
+        interval = metadata.get("interval", "5m")
+        safe_ticker = ticker.replace(".", "_").replace("/", "_").replace(" ", "_")
+        model_metrics = _read_json(paths.report_dir / f"{safe_ticker}_{interval}_model_metrics.json")
+        backtest_metrics = _read_json(paths.report_dir / f"{safe_ticker}_{interval}_metrics.json")
+        rows.append(
+            {
+                "ticker": ticker,
+                "train_rows": metadata.get("train_rows", ""),
+                "validation_rows": metadata.get("validation_rows", ""),
+                "test_rows": metadata.get("test_rows", ""),
+                "val_acc": _nested(model_metrics, "validation", "accuracy"),
+                "test_acc": _nested(model_metrics, "test", "accuracy"),
+                "test_log_loss": _nested(model_metrics, "test", "log_loss"),
+                "bt_trades": backtest_metrics.get("num_trades", "") if backtest_metrics else "",
+                "bt_win_rate": backtest_metrics.get("win_rate", "") if backtest_metrics else "",
+                "bt_sharpe": backtest_metrics.get("sharpe", "") if backtest_metrics else "",
+                "bt_return": backtest_metrics.get("total_return", "") if backtest_metrics else "",
+            }
+        )
+
+    if not rows:
+        print("No model metadata found under artifacts/models.")
+        return
+
+    headers = [
+        "ticker",
+        "train_rows",
+        "validation_rows",
+        "test_rows",
+        "val_acc",
+        "test_acc",
+        "test_log_loss",
+        "bt_trades",
+        "bt_win_rate",
+        "bt_sharpe",
+        "bt_return",
+    ]
+    print(_format_table(rows, headers))
+
+
+def _read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _nested(data: dict, *keys: str):
+    current = data
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            return ""
+        current = current[key]
+    return current
+
+
+def _format_table(rows: list[dict], headers: list[str]) -> str:
+    formatted_rows = [
+        {header: _format_value(row.get(header, "")) for header in headers}
+        for row in rows
+    ]
+    widths = {
+        header: max(len(header), *(len(row[header]) for row in formatted_rows))
+        for header in headers
+    }
+    lines = [
+        "  ".join(header.ljust(widths[header]) for header in headers),
+        "  ".join("-" * widths[header] for header in headers),
+    ]
+    for row in formatted_rows:
+        lines.append("  ".join(row[header].ljust(widths[header]) for header in headers))
+    return "\n".join(lines)
+
+
+def _format_value(value) -> str:
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    return str(value)
 
 
 if __name__ == "__main__":
