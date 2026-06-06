@@ -23,13 +23,12 @@ The training notebook checkpoints LSTM and GRU models after every epoch and resu
 
 ## Data Requirement
 
-For the current historical CSV data, copy one of these folders into the repo or Drive before running notebook 01:
+For the Kaggle NIFTY 50 minute dataset, copy the extracted CSV files into Drive before running notebook 01:
 
 ```text
-/content/drive/MyDrive/trading_system/TradingBot26/data/BANK_NIFTY_data/
-/content/drive/MyDrive/trading_system/data/BANK_NIFTY_data/
+/content/drive/MyDrive/trading_system/data/raw/18/
 ```
 
-`NIFTY_data` works the same way. Notebook 01 auto-detects `BANK_NIFTY_data` first, then `NIFTY_data`, parses files like `BNF_2012.csv`, resamples 1-minute OHLC rows to 5-minute candles, and creates synthetic volume because the source files do not include volume.
+Notebook 01 auto-detects `NIFTY 50_5minute.csv`, filters NSE market hours, converts all-zero index volume to synthetic volume, and writes `NIFTY_5m_intraday.parquet` plus daily context. `BANK_NIFTY_data` and `NIFTY_data` folders still work as fallback local formats.
 
-Notebook 01 tries `jugaad-data` first, then `openchart` only if no local file/folder is present. The yfinance 5-minute fallback is only for smoke-testing the pipeline and is not enough for meaningful model training.
+Notebook 01 uses local data for real training. The yfinance 5-minute fallback is only for smoke-testing the pipeline and is not enough for meaningful model training.

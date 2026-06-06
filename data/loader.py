@@ -11,8 +11,37 @@ import pandas as pd
 
 from config import MarketConfig, PathConfig
 
-OPENCHART_EQUITY_TOKENS = {
-    "RELIANCE": "2885",
+OPENCHART_DIRECT_INSTRUMENTS = {
+    "RELIANCE": {
+        "token": "2885",
+        "symbol": "RELIANCE-EQ",
+        "symbol_type": "Equity",
+        "segment": "EQ",
+    },
+    "NIFTY": {
+        "token": "26000",
+        "symbol": "NIFTY 50",
+        "symbol_type": "Index",
+        "segment": "IDX",
+    },
+    "NIFTY50": {
+        "token": "26000",
+        "symbol": "NIFTY 50",
+        "symbol_type": "Index",
+        "segment": "IDX",
+    },
+    "BANKNIFTY": {
+        "token": "26004",
+        "symbol": "NIFTY BANK",
+        "symbol_type": "Index",
+        "segment": "IDX",
+    },
+    "NIFTYBANK": {
+        "token": "26004",
+        "symbol": "NIFTY BANK",
+        "symbol_type": "Index",
+        "segment": "IDX",
+    },
 }
 
 
@@ -242,25 +271,30 @@ class MarketDataLoader:
                 "use an uploaded historical intraday file."
             ) from exc
 
-        symbol = f"{self.market.symbol}-{self.market.series}"
+        instrument = _openchart_instrument(self.market)
         try:
             client = NSEData()
             start_dt = datetime.combine(start, datetime.min.time())
             end_dt = datetime.combine(end, datetime.max.time())
-            token = OPENCHART_EQUITY_TOKENS.get(self.market.symbol.upper())
-            if token:
+            if instrument["token"]:
                 return client.historical_direct(
-                    token=token,
-                    symbol=symbol,
-                    symbol_type="Equity",
+                    token=instrument["token"],
+                    symbol=instrument["symbol"],
+                    symbol_type=instrument["symbol_type"],
                     start=start_dt,
                     end=end_dt,
                     interval=self.market.interval,
                 )
-            return client.historical(symbol, "EQ", start_dt, end_dt, self.market.interval)
+            return client.historical(
+                instrument["symbol"],
+                instrument["segment"],
+                start_dt,
+                end_dt,
+                self.market.interval,
+            )
         except Exception as exc:
             raise DataUnavailableError(
-                f"openchart could not fetch {symbol} {self.market.interval} data. "
+                f"openchart could not fetch {instrument['symbol']} {self.market.interval} data. "
                 "NSE charting availability varies; try a shorter lookback or use "
                 "an uploaded historical intraday Parquet/CSV file."
             ) from exc
@@ -336,13 +370,58 @@ def _dedupe_sources(sources: list[str]) -> list[str]:
     return deduped
 
 
+def _openchart_instrument(market: MarketConfig) -> dict[str, str | None]:
+    normalized = market.symbol.upper().replace("_", "").replace(" ", "")
+    direct = OPENCHART_DIRECT_INSTRUMENTS.get(normalized)
+    if direct is not None:
+        return dict(direct)
+
+    if normalized.startswith("NIFTY") or normalized.endswith("NIFTY"):
+        return {
+            "token": None,
+            "symbol": market.symbol.replace("_", " ").upper(),
+            "symbol_type": "Index",
+            "segment": "IDX",
+        }
+
+    symbol = market.symbol.upper()
+    series_suffix = f"-{market.series.upper()}"
+    if not symbol.endswith(series_suffix):
+        symbol = f"{symbol}{series_suffix}"
+    return {
+        "token": None,
+        "symbol": symbol,
+        "symbol_type": "Equity",
+        "segment": "EQ",
+    }
+
+
 def _default_local_path(symbol: str) -> Path | None:
     normalized = symbol.upper().replace("_", "")
     if normalized in {"BANKNIFTY", "BNF"}:
-        return Path("data") / "BANK_NIFTY_data"
+        return _first_existing_path(
+            [
+                Path("data") / "raw" / "18" / "NIFTY BANK_5minute.csv",
+                Path("data") / "raw" / "nifty50" / "NIFTY BANK_5minute.csv",
+                Path("data") / "BANK_NIFTY_data",
+            ]
+        )
     if normalized in {"NIFTY", "NIFTY50"}:
-        return Path("data") / "NIFTY_data"
+        return _first_existing_path(
+            [
+                Path("data") / "raw" / "18" / "NIFTY 50_5minute.csv",
+                Path("data") / "raw" / "nifty50" / "NIFTY 50_5minute.csv",
+                Path("data") / "NIFTY_data",
+            ]
+        )
     return None
+
+
+def _first_existing_path(paths: list[Path]) -> Path:
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[-1]
 
 
 def _prefer_yearly_files(files: list[Path]) -> list[Path]:
@@ -382,6 +461,8 @@ def _read_local_ohlc_csv(path: Path, *, symbol: str) -> pd.DataFrame:
         )
     elif "datetime" in frame.columns:
         timestamps = pd.to_datetime(frame["datetime"], errors="coerce")
+    elif "date" in frame.columns:
+        timestamps = pd.to_datetime(frame["date"], errors="coerce")
     else:
         raise ValueError(f"{path} must include Date/Time columns or a datetime column")
 
@@ -397,6 +478,8 @@ def _read_local_ohlc_csv(path: Path, *, symbol: str) -> pd.DataFrame:
     )
     output = output.dropna(subset=["open", "high", "low", "close"])
     output["volume"] = output["volume"].fillna(1.0)
+    if output["volume"].fillna(0.0).eq(0.0).all():
+        output["volume"] = 1.0
     return output.sort_index()
 
 

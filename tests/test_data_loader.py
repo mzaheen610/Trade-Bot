@@ -189,6 +189,45 @@ def test_local_csv_prefers_yearly_files_over_combined_exports(tmp_path):
     assert frame.iloc[0]["open"] == 100
 
 
+def test_local_csv_parses_kaggle_nifty_timestamp_and_zero_volume(tmp_path):
+    source = tmp_path / "NIFTY 50_5minute.csv"
+    source.write_text(
+        "\n".join(
+            [
+                "date,open,high,low,close,volume",
+                "2015-01-09 09:15:00,8285.45,8301.30,8285.45,8301.20,0",
+                "2015-01-09 09:20:00,8300.50,8303.00,8293.25,8301.00,0",
+                "2015-01-09 17:35:00,8301.00,8301.00,8301.00,8301.00,0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    paths = PathConfig(
+        root=tmp_path,
+        raw_data_dir=tmp_path / "data" / "raw",
+        processed_data_dir=tmp_path / "data" / "processed",
+        artifact_dir=tmp_path / "artifacts",
+        model_artifact_dir=tmp_path / "artifacts" / "models",
+        report_dir=tmp_path / "reports",
+    )
+    market = MarketConfig(
+        symbol="NIFTY",
+        ticker="NIFTY",
+        intraday_source="local-csv",
+        local_intraday_path=source,
+    )
+    loader = MarketDataLoader(paths, market)
+
+    result = loader.download_intraday(source="local-csv")
+    frame = pd.read_parquet(result.path)
+
+    assert result.rows == 2
+    assert frame.index.tolist() == pd.to_datetime(
+        ["2015-01-09 09:15:00", "2015-01-09 09:20:00"]
+    ).tolist()
+    assert frame["volume"].tolist() == [1.0, 1.0]
+
+
 def test_daily_context_can_be_resampled_from_local_intraday(tmp_path):
     paths = PathConfig(
         root=tmp_path,
@@ -264,3 +303,43 @@ def test_openchart_reliance_uses_direct_equity_token(tmp_path, monkeypatch):
     assert calls["token"] == "2885"
     assert calls["symbol"] == "RELIANCE-EQ"
     assert calls["symbol_type"] == "Equity"
+
+
+def test_openchart_banknifty_uses_direct_index_token(tmp_path, monkeypatch):
+    calls = {}
+
+    class FakeNSEData:
+        def historical_direct(self, **kwargs):
+            calls.update(kwargs)
+            index = pd.date_range("2026-01-01 09:15", periods=2, freq="5min")
+            return pd.DataFrame(
+                {
+                    "Open": [100, 101],
+                    "High": [101, 102],
+                    "Low": [99, 100],
+                    "Close": [100.5, 101.5],
+                    "Volume": [1000, 1100],
+                },
+                index=index,
+            )
+
+    fake_module = types.SimpleNamespace(NSEData=FakeNSEData)
+    monkeypatch.setitem(sys.modules, "openchart", fake_module)
+
+    paths = PathConfig(
+        root=tmp_path,
+        raw_data_dir=tmp_path / "data" / "raw",
+        processed_data_dir=tmp_path / "data" / "processed",
+        artifact_dir=tmp_path / "artifacts",
+        model_artifact_dir=tmp_path / "artifacts" / "models",
+        report_dir=tmp_path / "reports",
+    )
+    market = MarketConfig(symbol="BANKNIFTY", ticker="BANKNIFTY", intraday_source="openchart")
+    loader = MarketDataLoader(paths, market)
+
+    result = loader.download_intraday(source="openchart")
+
+    assert result.rows == 2
+    assert calls["token"] == "26004"
+    assert calls["symbol"] == "NIFTY BANK"
+    assert calls["symbol_type"] == "Index"

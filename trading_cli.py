@@ -77,7 +77,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
         "--intraday-source",
         default="jugaad",
         choices=["local-csv", "openchart", "jugaad", "yfinance-5m"],
-        help="Primary source is jugaad; use local-csv for bundled historical CSV folders.",
+        help="Primary source is jugaad; use local-csv for bundled/Kaggle historical CSV files.",
     )
     parser.add_argument(
         "--daily-source",
@@ -89,7 +89,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
         "--local-data-path",
         type=Path,
         default=None,
-        help="CSV file or folder for --intraday-source local-csv.",
+        help="CSV file or folder for --intraday-source local-csv, such as data/raw/18.",
     )
     parser.add_argument(
         "--local-data-pattern",

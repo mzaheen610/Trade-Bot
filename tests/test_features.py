@@ -8,7 +8,7 @@ import pytest
 from config import FeatureConfig, LabelConfig, MarketConfig, NormalizerConfig, PathConfig
 from features.labels import LABEL_TO_ID, build_forward_labels
 from features.normalizer import RollingZScoreNormalizer
-from features.pipeline import FeatureEngineeringPipeline
+from features.pipeline import FeatureBuilder, FeatureEngineeringPipeline
 
 
 def test_rolling_zscore_uses_trailing_shifted_window_only():
@@ -79,3 +79,34 @@ def test_feature_config_records_normalization_labels_and_versions(tmp_path):
     assert metadata["intraday_source"] == "jugaad"
     assert metadata["intraday_fallback_sources"] == ["openchart"]
     assert "jugaad-data" in metadata["package_versions"]
+
+
+def test_daily_context_merge_accepts_named_date_indexes():
+    intraday_index = pd.date_range("2026-02-01 09:15", periods=3, freq="5min", name="date")
+    intraday = pd.DataFrame(
+        {
+            "open": [100.0, 101.0, 102.0],
+            "high": [101.0, 102.0, 103.0],
+            "low": [99.0, 100.0, 101.0],
+            "close": [100.5, 101.5, 102.5],
+            "volume": [1.0, 1.0, 1.0],
+        },
+        index=intraday_index,
+    )
+    daily_index = pd.date_range("2026-01-01", periods=25, freq="D", name="date")
+    daily_close = pd.Series(range(100, 125), index=daily_index, dtype=float)
+    daily = pd.DataFrame(
+        {
+            "open": daily_close,
+            "high": daily_close + 1,
+            "low": daily_close - 1,
+            "close": daily_close,
+            "volume": 1.0,
+        },
+        index=daily_index,
+    )
+
+    result = FeatureBuilder(FeatureConfig(include_daily_context=True)).build(intraday, daily)
+
+    assert result.index.name == "date"
+    assert "daily_ema_21" in result.columns

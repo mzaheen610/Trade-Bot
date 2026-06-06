@@ -86,12 +86,12 @@ class FeatureBuilder:
             "daily_close_above_ema200",
         ]
         shifted = daily_features[context_columns].shift(1).dropna(how="all")
-        shifted = shifted.reset_index().rename(columns={"index": "session_date"})
+        shifted = _reset_index_as(shifted, "session_date")
         shifted["session_date"] = (
             pd.to_datetime(shifted["session_date"]).dt.normalize().astype("datetime64[ns]")
         )
 
-        intraday_reset = intraday.reset_index().rename(columns={"index": "timestamp"})
+        intraday_reset = _reset_index_as(intraday, "timestamp")
         intraday_reset["session_date"] = (
             pd.to_datetime(intraday_reset["timestamp"]).dt.normalize().astype("datetime64[ns]")
         )
@@ -239,6 +239,11 @@ def write_feature_config(
         ),
     }
     path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _reset_index_as(df: pd.DataFrame, column_name: str) -> pd.DataFrame:
+    reset = df.reset_index()
+    return reset.rename(columns={reset.columns[0]: column_name})
 
 
 def _package_versions(packages: list[str]) -> dict[str, str | None]:
