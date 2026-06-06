@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">Model Architecture</title>
+  <desc id="desc">LightGBM, LSTM, and GRU model inputs, structure, and outputs.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .lane { fill: #ffffff; stroke: #334155; stroke-width: 1.5; rx: 8; }
+      .node { fill: #eef6ff; stroke: #1f4f7a; stroke-width: 1.4; rx: 8; }
+      .seq { fill: #f0fdf4; stroke: #276749; stroke-width: 1.4; rx: 8; }
+      .out { fill: #fff7ed; stroke: #9a3412; stroke-width: 1.4; rx: 8; }
+      .title { font: 700 22px Arial, sans-serif; fill: #172033; }
+      .laneTitle { font: 700 17px Arial, sans-serif; fill: #172033; }
+      .label { font: 700 14px Arial, sans-serif; fill: #172033; }
+      .text { font: 13px Arial, sans-serif; fill: #334155; }
+      .small { font: 12px Arial, sans-serif; fill: #475569; }
+      .arrow { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1200" height="720"/>
+  <text class="title" x="40" y="46">Model Architecture and Inputs</text>
+  <text class="text" x="40" y="72">All models predict the same three classes: SELL, HOLD, BUY.</text>
+
+  <rect class="lane" x="40" y="110" width="1120" height="160"/>
+  <text class="laneTitle" x="60" y="140">LightGBM classifier</text>
+  <rect class="node" x="70" y="170" width="250" height="64"/>
+  <text class="label" x="90" y="196">Current row features</text>
+  <text class="small" x="90" y="216">engineered + trailing normalized + lags</text>
+  <rect class="node" x="400" y="170" width="210" height="64"/>
+  <text class="label" x="420" y="196">symbol category</text>
+  <text class="small" x="420" y="216">native LightGBM categorical</text>
+  <rect class="node" x="690" y="170" width="210" height="64"/>
+  <text class="label" x="710" y="196">400 boosted trees</text>
+  <text class="small" x="710" y="216">balanced multiclass objective</text>
+  <rect class="out" x="980" y="170" width="140" height="64"/>
+  <text class="label" x="1000" y="196">probabilities</text>
+  <text class="small" x="1000" y="216">p_sell / p_hold / p_buy</text>
+  <path class="arrow" d="M320 202 H398"/>
+  <path class="arrow" d="M610 202 H688"/>
+  <path class="arrow" d="M900 202 H978"/>
+
+  <rect class="lane" x="40" y="310" width="1120" height="170"/>
+  <text class="laneTitle" x="60" y="340">LSTM classifier</text>
+  <rect class="seq" x="70" y="370" width="230" height="72"/>
+  <text class="label" x="90" y="396">Sequence tensor</text>
+  <text class="small" x="90" y="416">60 candles x n features</text>
+  <rect class="seq" x="370" y="370" width="170" height="72"/>
+  <text class="label" x="390" y="396">LSTM layer</text>
+  <text class="small" x="390" y="416">hidden size 128</text>
+  <rect class="seq" x="610" y="370" width="170" height="72"/>
+  <text class="label" x="630" y="396">LSTM layer</text>
+  <text class="small" x="630" y="416">hidden size 64</text>
+  <rect class="seq" x="850" y="370" width="130" height="72"/>
+  <text class="label" x="870" y="396">Dropout</text>
+  <text class="small" x="870" y="416">0.3</text>
+  <rect class="out" x="1030" y="370" width="100" height="72"/>
+  <text class="label" x="1050" y="396">Linear</text>
+  <text class="small" x="1050" y="416">3 logits</text>
+  <path class="arrow" d="M300 406 H368"/>
+  <path class="arrow" d="M540 406 H608"/>
+  <path class="arrow" d="M780 406 H848"/>
+  <path class="arrow" d="M980 406 H1028"/>
+
+  <rect class="lane" x="40" y="520" width="1120" height="150"/>
+  <text class="laneTitle" x="60" y="550">GRU classifier</text>
+  <rect class="seq" x="70" y="580" width="230" height="64"/>
+  <text class="label" x="90" y="606">Sequence tensor</text>
+  <text class="small" x="90" y="626">60 candles x n features</text>
+  <rect class="seq" x="390" y="580" width="210" height="64"/>
+  <text class="label" x="410" y="606">GRU layer</text>
+  <text class="small" x="410" y="626">hidden size 128</text>
+  <rect class="seq" x="690" y="580" width="150" height="64"/>
+  <text class="label" x="710" y="606">Dropout</text>
+  <text class="small" x="710" y="626">0.3</text>
+  <rect class="out" x="930" y="580" width="150" height="64"/>
+  <text class="label" x="950" y="606">Linear</text>
+  <text class="small" x="950" y="626">3 logits</text>
+  <path class="arrow" d="M300 612 H388"/>
+  <path class="arrow" d="M600 612 H688"/>
+  <path class="arrow" d="M840 612 H928"/>
+</svg>

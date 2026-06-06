@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+  <title id="title">Label and Signal Flow</title>
+  <desc id="desc">Forward label construction and conversion of probabilities into BUY, SELL, HOLD signals.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .box { fill: #ffffff; stroke: #334155; stroke-width: 1.5; rx: 8; }
+      .buy { fill: #ecfdf5; stroke: #15803d; }
+      .sell { fill: #fff1f2; stroke: #be123c; }
+      .hold { fill: #f1f5f9; stroke: #475569; }
+      .filter { fill: #fefce8; stroke: #a16207; }
+      .title { font: 700 22px Arial, sans-serif; fill: #172033; }
+      .label { font: 700 15px Arial, sans-serif; fill: #172033; }
+      .text { font: 13px Arial, sans-serif; fill: #334155; }
+      .small { font: 12px Arial, sans-serif; fill: #475569; }
+      .arrow { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1200" height="650"/>
+  <text class="title" x="40" y="46">BUY / SELL / HOLD Target and Signal Logic</text>
+  <text class="text" x="40" y="72">The labels train the models; the probability filters decide whether a prediction becomes an actionable signal.</text>
+
+  <rect class="box" x="60" y="120" width="230" height="92"/>
+  <text class="label" x="80" y="148">Current candle</text>
+  <text class="text" x="80" y="174">entry = close[t]</text>
+  <text class="text" x="80" y="194">look ahead 15 candles</text>
+
+  <rect class="buy" x="380" y="90" width="260" height="110"/>
+  <text class="label" x="400" y="118">BUY label</text>
+  <text class="text" x="400" y="144">+0.5% target hit first</text>
+  <text class="text" x="400" y="164">before -0.3% stop</text>
+  <text class="small" x="400" y="184">within next 15 candles</text>
+
+  <rect class="sell" x="380" y="230" width="260" height="110"/>
+  <text class="label" x="400" y="258">SELL label</text>
+  <text class="text" x="400" y="284">-0.5% target hit first</text>
+  <text class="text" x="400" y="304">before +0.3% stop</text>
+  <text class="small" x="400" y="324">within next 15 candles</text>
+
+  <rect class="hold" x="380" y="370" width="260" height="92"/>
+  <text class="label" x="400" y="398">HOLD label</text>
+  <text class="text" x="400" y="424">No clean target-before-stop</text>
+  <text class="small" x="400" y="444">or ambiguous same-candle outcome</text>
+
+  <path class="arrow" d="M290 166 C330 166 338 145 378 145"/>
+  <path class="arrow" d="M290 166 C330 166 338 285 378 285"/>
+  <path class="arrow" d="M290 166 C330 166 338 416 378 416"/>
+
+  <rect class="box" x="760" y="120" width="250" height="104"/>
+  <text class="label" x="780" y="148">Model output</text>
+  <text class="text" x="780" y="174">p_sell</text>
+  <text class="text" x="780" y="194">p_hold</text>
+  <text class="text" x="780" y="214">p_buy</text>
+
+  <rect class="filter" x="760" y="290" width="310" height="144"/>
+  <text class="label" x="780" y="318">Action filter</text>
+  <text class="text" x="780" y="344">confidence threshold: 0.65</text>
+  <text class="text" x="780" y="364">volume >= 1.5 x rolling average</text>
+  <text class="text" x="780" y="384">BUY: p_buy >= p_sell</text>
+  <text class="text" x="780" y="404">SELL: p_sell > p_buy</text>
+  <text class="small" x="780" y="424">otherwise HOLD</text>
+
+  <rect class="buy" x="790" y="500" width="120" height="64"/>
+  <text class="label" x="824" y="526">BUY</text>
+  <text class="small" x="814" y="546">signal = 1</text>
+  <rect class="hold" x="940" y="500" width="120" height="64"/>
+  <text class="label" x="970" y="526">HOLD</text>
+  <text class="small" x="966" y="546">signal = 0</text>
+  <rect class="sell" x="1090" y="500" width="80" height="64"/>
+  <text class="label" x="1110" y="526">SELL</text>
+  <text class="small" x="1104" y="546">-1</text>
+
+  <path class="arrow" d="M885 224 V288"/>
+  <path class="arrow" d="M915 434 C880 462 860 475 850 498"/>
+  <path class="arrow" d="M915 434 C950 462 985 475 1000 498"/>
+  <path class="arrow" d="M915 434 C1010 462 1118 475 1130 498"/>
+</svg>
