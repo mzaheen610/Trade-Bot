@@ -52,6 +52,7 @@ def train_torch_classifier(
     learning_rate: float = 1e-3,
     num_workers: int = 2,
     device: torch.device | None = None,
+    log_every_batches: int = 0,
 ) -> TorchTrainingResult:
     model_dir.mkdir(parents=True, exist_ok=True)
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -69,6 +70,12 @@ def train_torch_classifier(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=device.type == "cuda",
+    )
+    print(
+        f"{model_name}: device={device}, train_sequences={len(train_arrays.y):,}, "
+        f"validation_sequences={len(validation_arrays.y):,}, batch_size={batch_size}, "
+        f"train_batches={len(train_loader):,}, validation_batches={len(validation_loader):,}",
+        flush=True,
     )
 
     weights = _class_weights(train_arrays.y).to(device)
@@ -91,9 +98,10 @@ def train_torch_classifier(
         start_epoch = int(checkpoint["epoch"]) + 1
         best_val_loss = float(checkpoint.get("best_val_loss", best_val_loss))
         history = list(checkpoint.get("history", []))
-        print(f"Resumed {model_name} from epoch {start_epoch}")
+        print(f"Resumed {model_name} from epoch {start_epoch}", flush=True)
 
     for epoch in range(start_epoch, epochs):
+        print(f"{model_name} epoch={epoch} starting training...", flush=True)
         train_loss = _run_epoch(
             model,
             train_loader,
@@ -101,7 +109,11 @@ def train_torch_classifier(
             device=device,
             optimizer=optimizer,
             scaler=scaler,
+            model_name=model_name,
+            epoch=epoch,
+            log_every_batches=log_every_batches,
         )
+        print(f"{model_name} epoch={epoch} starting validation...", flush=True)
         val_loss, val_accuracy = _evaluate(model, validation_loader, criterion, device=device)
         row = {
             "epoch": epoch,
@@ -113,7 +125,8 @@ def train_torch_classifier(
         print(
             f"{model_name} epoch={epoch} "
             f"train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
-            f"val_accuracy={val_accuracy:.4f}"
+            f"val_accuracy={val_accuracy:.4f}",
+            flush=True,
         )
 
         if val_loss < best_val_loss:
@@ -193,11 +206,15 @@ def _run_epoch(
     device: torch.device,
     optimizer: torch.optim.Optimizer,
     scaler: torch.cuda.amp.GradScaler,
+    model_name: str,
+    epoch: int,
+    log_every_batches: int,
 ) -> float:
     model.train()
     losses: list[float] = []
     autocast_context = torch.cuda.amp.autocast if device.type == "cuda" else nullcontext
-    for x_batch, y_batch in loader:
+    total_batches = len(loader)
+    for batch_index, (x_batch, y_batch) in enumerate(loader, start=1):
         x_batch = x_batch.to(device, non_blocking=True)
         y_batch = y_batch.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
@@ -207,6 +224,14 @@ def _run_epoch(
         scaler.step(optimizer)
         scaler.update()
         losses.append(float(loss.detach().cpu()))
+        if log_every_batches and (
+            batch_index == 1 or batch_index % log_every_batches == 0 or batch_index == total_batches
+        ):
+            print(
+                f"{model_name} epoch={epoch} train batch "
+                f"{batch_index:,}/{total_batches:,} loss={losses[-1]:.5f}",
+                flush=True,
+            )
     return float(np.mean(losses)) if losses else 0.0
 
 
@@ -240,4 +265,3 @@ def _class_weights(labels: np.ndarray) -> torch.Tensor:
     counts[counts == 0.0] = 1.0
     weights = counts.sum() / (len(counts) * counts)
     return torch.tensor(weights, dtype=torch.float32)
-

@@ -110,19 +110,22 @@ def load_instruments(
     pattern: str,
     min_rows: int,
     limit: int | None,
+    progress_every: int = 25,
 ) -> list[LoadedInstrument]:
     loaded: list[LoadedInstrument] = []
-    for path in sorted(processed_root.glob(pattern)):
+    paths = sorted(processed_root.glob(pattern))
+    print(f"Loading up to {limit or len(paths)} processed feature files from {processed_root}", flush=True)
+    for file_index, path in enumerate(paths, start=1):
         try:
             frame = pd.read_parquet(path)
         except Exception as exc:
-            print(f"Skipping {path.name}: could not read parquet ({exc}).")
+            print(f"Skipping {path.name}: could not read parquet ({exc}).", flush=True)
             continue
         if frame.empty:
-            print(f"Skipping {path.name}: empty feature file.")
+            print(f"Skipping {path.name}: empty feature file.", flush=True)
             continue
         if "label" not in frame.columns:
-            print(f"Skipping {path.name}: missing label column.")
+            print(f"Skipping {path.name}: missing label column.", flush=True)
             continue
 
         frame = frame.copy()
@@ -136,7 +139,7 @@ def load_instruments(
         frame = frame.dropna(subset=["label"])
         frame["label"] = frame["label"].astype(int)
         if len(frame) < min_rows:
-            print(f"Skipping {path.name}: only {len(frame):,} rows after cleanup.")
+            print(f"Skipping {path.name}: only {len(frame):,} rows after cleanup.", flush=True)
             continue
 
         loaded.append(
@@ -146,8 +149,15 @@ def load_instruments(
                 frame=frame,
             )
         )
+        if progress_every and len(loaded) % progress_every == 0:
+            print(
+                f"Loaded {len(loaded):,} usable instruments "
+                f"after scanning {file_index:,}/{len(paths):,} files.",
+                flush=True,
+            )
         if limit is not None and len(loaded) >= limit:
             break
+    print(f"Loaded {len(loaded):,} usable instruments.", flush=True)
     return loaded
 
 
@@ -177,12 +187,23 @@ def stage_processed_feature_files(
         raise FileNotFoundError(f"No processed feature files found under {source_root}")
 
     staging_root.mkdir(parents=True, exist_ok=True)
+    print(
+        f"Staging {len(source_files):,} processed feature files from {source_root} "
+        f"to {staging_root}...",
+        flush=True,
+    )
     copied = 0
     skipped = 0
-    for source_path in source_files:
+    for file_index, source_path in enumerate(source_files, start=1):
         destination = staging_root / source_path.name
         if destination.exists() and not force_refresh:
             skipped += 1
+            if file_index == 1 or file_index % 25 == 0 or file_index == len(source_files):
+                print(
+                    f"Staging progress: {file_index:,}/{len(source_files):,} "
+                    f"({copied:,} copied, {skipped:,} already existed)",
+                    flush=True,
+                )
             continue
         try:
             shutil.copy2(source_path, destination)
@@ -195,10 +216,17 @@ def stage_processed_feature_files(
                 ) from exc
             raise
         copied += 1
+        if file_index == 1 or file_index % 25 == 0 or file_index == len(source_files):
+            print(
+                f"Staging progress: {file_index:,}/{len(source_files):,} "
+                f"({copied:,} copied, {skipped:,} already existed)",
+                flush=True,
+            )
 
     print(
         f"Staged {copied} processed feature files to {staging_root} "
-        f"({skipped} already existed)."
+        f"({skipped} already existed).",
+        flush=True,
     )
     return staging_root
 
@@ -218,7 +246,13 @@ def train_pooled_lgbm(
     except ImportError as exc:
         raise RuntimeError("LightGBM training dependencies are not installed.") from exc
 
+    print(
+        f"Preparing pooled LightGBM frame from {len(instruments):,} instruments "
+        f"and {len(feature_columns):,} base features...",
+        flush=True,
+    )
     combined = combine_instruments(instruments, feature_columns=feature_columns)
+    print(f"Combined LightGBM frame rows={len(combined):,}. Splitting by calendar date...", flush=True)
     splits = date_based_split(combined, split_config)
     categorical_features: list[str] = []
     model_feature_columns = list(feature_columns)
@@ -237,6 +271,11 @@ def train_pooled_lgbm(
     if len(set(train["label"].astype(int).unique())) < 2:
         raise ValueError("Pooled training data contains fewer than two label classes.")
 
+    print(
+        f"Training LightGBM: train={len(train):,}, validation={len(validation):,}, "
+        f"test={len(test):,}, features={len(model_feature_columns):,}",
+        flush=True,
+    )
     model = LGBMClassifier(
         objective="multiclass",
         num_class=3,
@@ -259,6 +298,7 @@ def train_pooled_lgbm(
         eval_metric="multi_logloss",
         categorical_feature=categorical_features or "auto",
     )
+    print("LightGBM fit complete. Computing validation/test metrics...", flush=True)
 
     validation_metrics = classification_metrics(
         model,
@@ -334,6 +374,7 @@ def train_pooled_lgbm(
     joblib.dump(model, model_path)
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
     metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"Saved pooled LightGBM artifacts to {model_path}", flush=True)
 
     return {
         "model_path": model_path,
