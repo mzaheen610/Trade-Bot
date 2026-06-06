@@ -178,10 +178,11 @@ def stage_processed_feature_files(
 
     staging_root.mkdir(parents=True, exist_ok=True)
     copied = 0
+    skipped = 0
     for source_path in source_files:
         destination = staging_root / source_path.name
         if destination.exists() and not force_refresh:
-            copied += 1
+            skipped += 1
             continue
         try:
             shutil.copy2(source_path, destination)
@@ -195,7 +196,10 @@ def stage_processed_feature_files(
             raise
         copied += 1
 
-    print(f"Staged {copied} processed feature files to {staging_root}")
+    print(
+        f"Staged {copied} processed feature files to {staging_root} "
+        f"({skipped} already existed)."
+    )
     return staging_root
 
 

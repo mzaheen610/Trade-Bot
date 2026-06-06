@@ -56,6 +56,21 @@ def test_stage_processed_feature_files_copies_matching_parquets(tmp_path: Path) 
     ]
 
 
+def test_stage_processed_feature_files_skips_existing_without_refresh(tmp_path: Path) -> None:
+    source_root = tmp_path / "drive" / "processed"
+    staging_root = tmp_path / "local" / "processed"
+    source_root.mkdir(parents=True)
+    staging_root.mkdir(parents=True)
+    source_file = source_root / "AAA_5m_features.parquet"
+    staged_file = staging_root / "AAA_5m_features.parquet"
+    source_file.write_text("fresh", encoding="utf-8")
+    staged_file.write_text("existing", encoding="utf-8")
+
+    stage_processed_feature_files(source_root, staging_root, force_refresh=False)
+
+    assert staged_file.read_text(encoding="utf-8") == "existing"
+
+
 def test_stage_processed_feature_files_reports_drive_disconnect(tmp_path: Path) -> None:
     source_root = tmp_path / "drive" / "processed"
     staging_root = tmp_path / "local" / "processed"
