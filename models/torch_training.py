@@ -262,6 +262,13 @@ def _train_torch_classifier_from_datasets(
             history = checkpoint_history
             print(f"Resumed {model_name} from epoch {start_epoch}", flush=True)
 
+    if start_epoch >= epochs:
+        print(
+            f"{model_name}: checkpoint already completed requested epochs "
+            f"(start_epoch={start_epoch}, epochs={epochs}). Increase EPOCHS or remove the checkpoint to train more.",
+            flush=True,
+        )
+
     for epoch in range(start_epoch, epochs):
         print(f"{model_name} epoch={epoch} starting training...", flush=True)
         train_loss = _run_epoch(
