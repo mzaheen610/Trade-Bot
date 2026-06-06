@@ -92,7 +92,8 @@ def anchored_vwap(df: pd.DataFrame) -> pd.Series:
     sessions = pd.Series(df.index.date, index=df.index)
     cumulative_value = traded_value.groupby(sessions).cumsum()
     cumulative_volume = df["volume"].groupby(sessions).cumsum()
-    return cumulative_value / cumulative_volume.replace(0.0, np.nan)
+    vwap = cumulative_value / cumulative_volume.replace(0.0, np.nan)
+    return vwap.fillna(typical_price)
 
 
 def obv(close: pd.Series, volume: pd.Series) -> pd.Series:

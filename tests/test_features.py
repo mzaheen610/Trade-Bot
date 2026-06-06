@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from config import FeatureConfig, LabelConfig, MarketConfig, NormalizerConfig, PathConfig
+from features.indicators import anchored_vwap
 from features.labels import LABEL_TO_ID, build_forward_labels
 from features.normalizer import RollingZScoreNormalizer
 from features.pipeline import FeatureBuilder, FeatureEngineeringPipeline
@@ -38,6 +39,24 @@ def test_forward_labels_target_before_stop_and_hold_cases():
 
     assert labeled.iloc[0]["label"] == LABEL_TO_ID["BUY"]
     assert labeled.iloc[1]["label"] == LABEL_TO_ID["HOLD"]
+
+
+def test_anchored_vwap_fills_zero_volume_opening_bar():
+    index = pd.date_range("2026-01-01 09:15", periods=3, freq="5min")
+    df = pd.DataFrame(
+        {
+            "high": [102.0, 104.0, 106.0],
+            "low": [99.0, 101.0, 103.0],
+            "close": [100.5, 103.0, 104.5],
+            "volume": [0.0, 100.0, 100.0],
+        },
+        index=index,
+    )
+
+    result = anchored_vwap(df)
+
+    assert result.isna().sum() == 0
+    assert result.iloc[0] == pytest.approx((102.0 + 99.0 + 100.5) / 3.0)
 
 
 def test_feature_config_records_normalization_labels_and_versions(tmp_path):

@@ -186,6 +186,12 @@ def run_train(config: PipelineConfig) -> None:
         normalizer=config.normalizer,
     )
     dataset = pipeline.load()
+    if dataset.frame.empty:
+        raise SystemExit(
+            f"Processed feature file is empty for {config.market.ticker}. "
+            "Run the features command again; if it remains empty, use more intraday history "
+            "or reduce the normalization window."
+        )
     trainer = LightGBMModel(paths=config.paths, market=config.market)
     result = trainer.train(
         dataset.frame,
