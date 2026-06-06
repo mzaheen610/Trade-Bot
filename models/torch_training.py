@@ -116,6 +116,8 @@ def train_torch_classifier(
     num_workers: int = 2,
     device: torch.device | None = None,
     log_every_batches: int = 0,
+    max_grad_norm: float | None = 1.0,
+    use_amp: bool = False,
 ) -> TorchTrainingResult:
     train_dataset = NumpySequenceDataset(train_arrays)
     validation_dataset = NumpySequenceDataset(validation_arrays)
@@ -133,6 +135,8 @@ def train_torch_classifier(
         num_workers=num_workers,
         device=device,
         log_every_batches=log_every_batches,
+        max_grad_norm=max_grad_norm,
+        use_amp=use_amp,
     )
 
 
@@ -151,6 +155,8 @@ def train_torch_classifier_from_frames(
     num_workers: int = 2,
     device: torch.device | None = None,
     log_every_batches: int = 0,
+    max_grad_norm: float | None = 1.0,
+    use_amp: bool = False,
 ) -> TorchTrainingResult:
     train_dataset = FrameSequenceDataset(train_frame, feature_columns=feature_columns, lookback=lookback)
     validation_dataset = FrameSequenceDataset(
@@ -180,6 +186,8 @@ def train_torch_classifier_from_frames(
         num_workers=num_workers,
         device=device,
         log_every_batches=log_every_batches,
+        max_grad_norm=max_grad_norm,
+        use_amp=use_amp,
     )
 
 
@@ -198,6 +206,8 @@ def _train_torch_classifier_from_datasets(
     num_workers: int,
     device: torch.device | None,
     log_every_batches: int,
+    max_grad_norm: float | None,
+    use_amp: bool,
 ) -> TorchTrainingResult:
     model_dir.mkdir(parents=True, exist_ok=True)
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -226,7 +236,7 @@ def _train_torch_classifier_from_datasets(
     weights = _class_weights(train_labels).to(device)
     criterion = nn.CrossEntropyLoss(weight=weights)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and use_amp)
 
     latest_path = model_dir / f"{model_name}_latest.pt"
     best_path = model_dir / f"{model_name}_best.pt"
@@ -239,9 +249,9 @@ def _train_torch_classifier_from_datasets(
     if latest_path.exists():
         checkpoint = torch.load(latest_path, map_location=device)
         checkpoint_history = list(checkpoint.get("history", []))
-        if _history_has_nonfinite(checkpoint_history):
+        if _history_has_nonfinite(checkpoint_history) or not _state_dict_is_finite(checkpoint["model_state"]):
             print(
-                f"Ignoring {model_name} checkpoint with non-finite loss history: {latest_path}",
+                f"Ignoring {model_name} checkpoint with non-finite history or weights: {latest_path}",
                 flush=True,
             )
         else:
@@ -261,12 +271,20 @@ def _train_torch_classifier_from_datasets(
             device=device,
             optimizer=optimizer,
             scaler=scaler,
+            max_grad_norm=max_grad_norm,
+            use_amp=use_amp,
             model_name=model_name,
             epoch=epoch,
             log_every_batches=log_every_batches,
         )
         print(f"{model_name} epoch={epoch} starting validation...", flush=True)
-        val_loss, val_accuracy = _evaluate(model, validation_loader, criterion, device=device)
+        val_loss, val_accuracy = _evaluate(
+            model,
+            validation_loader,
+            criterion,
+            device=device,
+            use_amp=use_amp,
+        )
         row = {
             "epoch": epoch,
             "train_loss": train_loss,
@@ -357,20 +375,23 @@ def _run_epoch(
     *,
     device: torch.device,
     optimizer: torch.optim.Optimizer,
-    scaler: torch.cuda.amp.GradScaler,
+    scaler: torch.amp.GradScaler,
+    max_grad_norm: float | None,
+    use_amp: bool,
     model_name: str,
     epoch: int,
     log_every_batches: int,
 ) -> float:
     model.train()
     losses: list[float] = []
-    autocast_context = torch.cuda.amp.autocast if device.type == "cuda" else nullcontext
     total_batches = len(loader)
     for batch_index, (x_batch, y_batch) in enumerate(loader, start=1):
         x_batch = x_batch.to(device, non_blocking=True)
         y_batch = y_batch.to(device, non_blocking=True)
+        if not torch.isfinite(x_batch).all():
+            raise FloatingPointError(f"{model_name} epoch={epoch} batch={batch_index} contains non-finite inputs.")
         optimizer.zero_grad(set_to_none=True)
-        with autocast_context():
+        with _autocast_context(device=device, use_amp=use_amp):
             loss = criterion(model(x_batch), y_batch)
         if not torch.isfinite(loss):
             raise FloatingPointError(
@@ -378,6 +399,13 @@ def _run_epoch(
                 "Check feature cleaning and reduce learning_rate or disable mixed precision if this persists."
             )
         scaler.scale(loss).backward()
+        if max_grad_norm is not None:
+            scaler.unscale_(optimizer)
+            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            if not torch.isfinite(grad_norm):
+                raise FloatingPointError(
+                    f"{model_name} epoch={epoch} batch={batch_index} produced non-finite gradients."
+                )
         scaler.step(optimizer)
         scaler.update()
         losses.append(float(loss.detach().cpu()))
@@ -398,17 +426,19 @@ def _evaluate(
     criterion: nn.Module,
     *,
     device: torch.device,
+    use_amp: bool,
 ) -> tuple[float, float]:
     model.eval()
     losses: list[float] = []
     correct = 0
     total = 0
-    autocast_context = torch.cuda.amp.autocast if device.type == "cuda" else nullcontext
     with torch.no_grad():
         for x_batch, y_batch in loader:
             x_batch = x_batch.to(device, non_blocking=True)
             y_batch = y_batch.to(device, non_blocking=True)
-            with autocast_context():
+            if not torch.isfinite(x_batch).all():
+                raise FloatingPointError("Validation batch contains non-finite inputs.")
+            with _autocast_context(device=device, use_amp=use_amp):
                 logits = model(x_batch)
                 loss = criterion(logits, y_batch)
             if not torch.isfinite(loss):
@@ -424,6 +454,12 @@ def _class_weights(labels: np.ndarray) -> torch.Tensor:
     counts[counts == 0.0] = 1.0
     weights = counts.sum() / (len(counts) * counts)
     return torch.tensor(weights, dtype=torch.float32)
+
+
+def _autocast_context(*, device: torch.device, use_amp: bool) -> Any:
+    if device.type == "cuda" and use_amp:
+        return torch.amp.autocast("cuda", enabled=True)
+    return nullcontext()
 
 
 def _clean_feature_array(values: np.ndarray, *, feature_clip: float | None) -> np.ndarray:
@@ -443,3 +479,10 @@ def _history_has_nonfinite(history: list[dict[str, Any]]) -> bool:
             if value is not None and not np.isfinite(float(value)):
                 return True
     return False
+
+
+def _state_dict_is_finite(state_dict: dict[str, Any]) -> bool:
+    for value in state_dict.values():
+        if torch.is_tensor(value) and value.is_floating_point() and not torch.isfinite(value).all():
+            return False
+    return True
