@@ -448,8 +448,12 @@ def _read_local_ohlc_csv(path: Path, *, symbol: str) -> pd.DataFrame:
     }
     frame = frame.rename(columns={column: rename_map.get(column, column) for column in frame.columns})
     if "instrument" in frame.columns and symbol:
-        normalized_symbol = symbol.upper().replace("_", "")
-        instruments = frame["instrument"].astype(str).str.upper().str.replace("_", "", regex=False)
+        normalized_symbol = (
+            symbol.upper().replace("_", "").replace(" ", "").replace(".", "")
+        )
+        instruments = (
+            frame["instrument"].astype(str).str.upper().str.replace("_", "", regex=False).str.replace(" ", "", regex=False).str.replace(".", "", regex=False)
+        )
         if normalized_symbol in set(instruments.unique()):
             frame = frame[instruments == normalized_symbol]
 

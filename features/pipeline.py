@@ -125,11 +125,13 @@ class FeatureEngineeringPipeline:
 
     def processed_path(self) -> Path:
         return self.paths.processed_data_dir / (
-            f"{self.market.ticker.replace('.', '_')}_{self.market.interval}_features.parquet"
+            f"{_safe_name(self.market.ticker)}_{self.market.interval}_features.parquet"
         )
 
     def feature_config_path(self) -> Path:
-        return self.paths.artifact_dir / "feature_config.json"
+        return self.paths.artifact_dir / (
+            f"feature_config_{_safe_name(self.market.ticker)}_{self.market.interval}.json"
+        )
 
     def run(self, intraday: pd.DataFrame, daily: pd.DataFrame | None = None) -> ProcessedDataset:
         builder = FeatureBuilder(self.feature_config)
@@ -254,3 +256,7 @@ def _package_versions(packages: list[str]) -> dict[str, str | None]:
         except importlib.metadata.PackageNotFoundError:
             versions[package] = None
     return versions
+
+
+def _safe_name(value: str) -> str:
+    return value.replace(".", "_").replace("/", "_").replace(" ", "_")

@@ -16,3 +16,13 @@ artifacts/models/*
 !artifacts/models/.gitkeep
 reports/*
 !reports/.gitkeep
+
+# Local/raw dataset drops and exploratory probes.
+data/BANK_NIFTY_data/
+data/NIFTY_data/
+API_REFERENCE_Jugaad.md
+scripts/download_jugaad_data.py
+scripts/kaggle_nifty50_dat.py
+scripts/test_data_sources.py
+scripts/test_jugaad_inspect.py
+scripts/test_openchart_direct.py

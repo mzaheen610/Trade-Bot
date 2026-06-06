@@ -59,6 +59,18 @@ trading-mvp download --intraday-source yfinance-5m
 
 Training and backtest outputs are written under `reports/`. Ticker-specific files are kept so runs do not overwrite each other, for example `reports/NIFTY_5m_model_metrics.json`, `reports/NIFTY_5m_metrics.json`, `reports/NIFTY_5m_trades.csv`, and `reports/NIFTY_5m_monthly_metrics.csv`. The unprefixed files such as `reports/model_metrics.json` and `reports/trades.csv` are only the latest-run aliases.
 
+To train against the full raw NIFTY50 CSV corpus and see the same per-epoch LSTM/GRU logs you get in Colab, run:
+
+```bash
+python scripts/batch_train.py --source-root data/raw/nifty50 --source-format csv
+```
+
+For a quick smoke test on just one source, add `--limit 1` and optionally `--skip-backtest`:
+
+```bash
+python scripts/batch_train.py --source-root data/raw/nifty50 --source-format csv --limit 1 --skip-backtest
+```
+
 ## Colab Training
 
 Colab notebooks live in `notebooks/` and are designed to persist every dataset, checkpoint, model, and report under:
@@ -68,6 +80,10 @@ BASE = "/content/drive/MyDrive/trading_system/"
 ```
 
 Copy or clone this repository to `/content/drive/MyDrive/trading_system/TradingBot26/` before running the notebooks. The training notebook checkpoints LSTM and GRU models after every epoch and can resume from `*_latest.pt`.
+
+For a full NIFTY50 batch run in Colab, keep the raw CSV folder under `/content/drive/MyDrive/trading_system/data/raw/nifty50/` and use the batch cells added to notebooks 01, 02, and 03. The feature-engineering step now writes per-symbol feature configs so multiple files can be processed without overwriting each other.
+
+For a simpler one-notebook Colab flow, open [05_colab_nifty50_batch.ipynb](/Users/mzaheen/TradingBot26/notebooks/05_colab_nifty50_batch.ipynb) and run the cells from top to bottom. It performs raw cache creation, feature engineering, and training in one place.
 
 For Colab training with the Kaggle NIFTY 50 minute dataset, put the extracted CSV files here:
 

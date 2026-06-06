@@ -17,8 +17,8 @@ from features.sequences import SequenceDatasetArrays
 
 
 class NumpySequenceDataset(Dataset):
-    def __init__(self, arrays: SequenceDatasetArrays) -> None:
-        self.x = torch.from_numpy(arrays.x)
+    def __init__(self, arrays: SequenceDatasetArrays, *, feature_clip: float | None = 20.0) -> None:
+        self.x = torch.from_numpy(_clean_feature_array(arrays.x, feature_clip=feature_clip))
         self.y = torch.from_numpy(arrays.y)
 
     def __len__(self) -> int:
@@ -37,6 +37,7 @@ class FrameSequenceDataset(Dataset):
         lookback: int,
         group_column: str = "symbol",
         label_column: str = "label",
+        feature_clip: float | None = 20.0,
     ) -> None:
         if lookback <= 1:
             raise ValueError("lookback must be greater than 1")
@@ -48,6 +49,9 @@ class FrameSequenceDataset(Dataset):
         self.feature_blocks: list[np.ndarray] = []
         self.label_blocks: list[np.ndarray] = []
         self.sequence_counts: list[int] = []
+        self.nonfinite_values_replaced = 0
+        self.clipped_values = 0
+        self.feature_clip = feature_clip
 
         if group_column in frame.columns:
             groups = frame.groupby(group_column, sort=False, observed=True)
@@ -58,10 +62,15 @@ class FrameSequenceDataset(Dataset):
             ordered = group.sort_index()
             if len(ordered) < lookback:
                 continue
-            features = np.ascontiguousarray(ordered[feature_columns].to_numpy(dtype=np.float32))
+            raw_features = ordered[feature_columns].to_numpy(dtype=np.float32)
+            self.nonfinite_values_replaced += int(np.count_nonzero(~np.isfinite(raw_features)))
+            if feature_clip is not None:
+                finite_features = raw_features[np.isfinite(raw_features)]
+                self.clipped_values += int(np.count_nonzero(np.abs(finite_features) > feature_clip))
+            features = _clean_feature_array(raw_features, feature_clip=feature_clip)
             labels = ordered[label_column].to_numpy(dtype=np.int64)
             sequence_count = len(ordered) - lookback + 1
-            self.feature_blocks.append(features)
+            self.feature_blocks.append(np.ascontiguousarray(features))
             self.label_blocks.append(labels[lookback - 1 :])
             self.sequence_counts.append(sequence_count)
 
@@ -149,6 +158,14 @@ def train_torch_classifier_from_frames(
         feature_columns=feature_columns,
         lookback=lookback,
     )
+    print(
+        f"{model_name}: cleaned sequence features "
+        f"train_nonfinite={train_dataset.nonfinite_values_replaced:,} "
+        f"validation_nonfinite={validation_dataset.nonfinite_values_replaced:,} "
+        f"train_clipped={train_dataset.clipped_values:,} "
+        f"validation_clipped={validation_dataset.clipped_values:,}",
+        flush=True,
+    )
     return _train_torch_classifier_from_datasets(
         model=model,
         model_name=model_name,
@@ -221,12 +238,19 @@ def _train_torch_classifier_from_datasets(
 
     if latest_path.exists():
         checkpoint = torch.load(latest_path, map_location=device)
-        model.load_state_dict(checkpoint["model_state"])
-        optimizer.load_state_dict(checkpoint["optimizer_state"])
-        start_epoch = int(checkpoint["epoch"]) + 1
-        best_val_loss = float(checkpoint.get("best_val_loss", best_val_loss))
-        history = list(checkpoint.get("history", []))
-        print(f"Resumed {model_name} from epoch {start_epoch}", flush=True)
+        checkpoint_history = list(checkpoint.get("history", []))
+        if _history_has_nonfinite(checkpoint_history):
+            print(
+                f"Ignoring {model_name} checkpoint with non-finite loss history: {latest_path}",
+                flush=True,
+            )
+        else:
+            model.load_state_dict(checkpoint["model_state"])
+            optimizer.load_state_dict(checkpoint["optimizer_state"])
+            start_epoch = int(checkpoint["epoch"]) + 1
+            best_val_loss = float(checkpoint.get("best_val_loss", best_val_loss))
+            history = checkpoint_history
+            print(f"Resumed {model_name} from epoch {start_epoch}", flush=True)
 
     for epoch in range(start_epoch, epochs):
         print(f"{model_name} epoch={epoch} starting training...", flush=True)
@@ -348,6 +372,11 @@ def _run_epoch(
         optimizer.zero_grad(set_to_none=True)
         with autocast_context():
             loss = criterion(model(x_batch), y_batch)
+        if not torch.isfinite(loss):
+            raise FloatingPointError(
+                f"{model_name} epoch={epoch} batch={batch_index} produced non-finite loss. "
+                "Check feature cleaning and reduce learning_rate or disable mixed precision if this persists."
+            )
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
@@ -382,6 +411,8 @@ def _evaluate(
             with autocast_context():
                 logits = model(x_batch)
                 loss = criterion(logits, y_batch)
+            if not torch.isfinite(loss):
+                raise FloatingPointError("Validation produced non-finite loss.")
             losses.append(float(loss.detach().cpu()))
             correct += int((logits.argmax(dim=1) == y_batch).sum().cpu())
             total += int(y_batch.numel())
@@ -393,3 +424,22 @@ def _class_weights(labels: np.ndarray) -> torch.Tensor:
     counts[counts == 0.0] = 1.0
     weights = counts.sum() / (len(counts) * counts)
     return torch.tensor(weights, dtype=torch.float32)
+
+
+def _clean_feature_array(values: np.ndarray, *, feature_clip: float | None) -> np.ndarray:
+    cleaned = np.asarray(values, dtype=np.float32)
+    if not np.isfinite(cleaned).all():
+        cleaned = cleaned.copy()
+        np.nan_to_num(cleaned, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    if feature_clip is not None:
+        cleaned = np.clip(cleaned, -feature_clip, feature_clip)
+    return np.ascontiguousarray(cleaned)
+
+
+def _history_has_nonfinite(history: list[dict[str, Any]]) -> bool:
+    for row in history:
+        for key in ("train_loss", "val_loss", "val_accuracy"):
+            value = row.get(key)
+            if value is not None and not np.isfinite(float(value)):
+                return True
+    return False
