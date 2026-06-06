@@ -167,6 +167,17 @@ def run_download(config: PipelineConfig, *, force_refresh: bool) -> None:
 
 def run_features(config: PipelineConfig) -> None:
     loader = MarketDataLoader(config.paths, config.market)
+    try:
+        daily = loader.load_daily_context()
+    except FileNotFoundError:
+        if config.market.daily_source != "intraday-resample":
+            raise
+        daily_result = loader.download_daily_context(force_refresh=False)
+        print(
+            f"daily_context: {daily_result.path} rows={daily_result.rows} "
+            f"source={daily_result.source} refreshed={daily_result.refreshed}"
+        )
+        daily = loader.load_daily_context()
     pipeline = FeatureEngineeringPipeline(
         paths=config.paths,
         market=config.market,
@@ -174,7 +185,7 @@ def run_features(config: PipelineConfig) -> None:
         labels=config.labels,
         normalizer=config.normalizer,
     )
-    dataset = pipeline.run(loader.load_intraday(), loader.load_daily_context())
+    dataset = pipeline.run(loader.load_intraday(), daily)
     print(
         f"features: {pipeline.processed_path()} rows={len(dataset.frame)} "
         f"columns={len(dataset.feature_columns)}"
