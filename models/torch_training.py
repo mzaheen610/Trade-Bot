@@ -74,7 +74,8 @@ def train_torch_classifier(
     print(
         f"{model_name}: device={device}, train_sequences={len(train_arrays.y):,}, "
         f"validation_sequences={len(validation_arrays.y):,}, batch_size={batch_size}, "
-        f"train_batches={len(train_loader):,}, validation_batches={len(validation_loader):,}",
+        f"train_batches={len(train_loader):,}, validation_batches={len(validation_loader):,}"
+        f"{_device_memory_summary(device)}",
         flush=True,
     )
 
@@ -101,7 +102,11 @@ def train_torch_classifier(
         print(f"Resumed {model_name} from epoch {start_epoch}", flush=True)
 
     for epoch in range(start_epoch, epochs):
-        print(f"{model_name} epoch={epoch} starting training...", flush=True)
+        print(
+            f"{model_name} epoch={epoch} starting training..."
+            f"{_device_memory_summary(device)}",
+            flush=True,
+        )
         train_loss = _run_epoch(
             model,
             train_loader,
@@ -113,7 +118,11 @@ def train_torch_classifier(
             epoch=epoch,
             log_every_batches=log_every_batches,
         )
-        print(f"{model_name} epoch={epoch} starting validation...", flush=True)
+        print(
+            f"{model_name} epoch={epoch} starting validation..."
+            f"{_device_memory_summary(device)}",
+            flush=True,
+        )
         val_loss, val_accuracy = _evaluate(model, validation_loader, criterion, device=device)
         row = {
             "epoch": epoch,
@@ -125,7 +134,8 @@ def train_torch_classifier(
         print(
             f"{model_name} epoch={epoch} "
             f"train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
-            f"val_accuracy={val_accuracy:.4f}",
+            f"val_accuracy={val_accuracy:.4f}"
+            f"{_device_memory_summary(device)}",
             flush=True,
         )
 
@@ -229,7 +239,8 @@ def _run_epoch(
         ):
             print(
                 f"{model_name} epoch={epoch} train batch "
-                f"{batch_index:,}/{total_batches:,} loss={losses[-1]:.5f}",
+                f"{batch_index:,}/{total_batches:,} loss={losses[-1]:.5f}"
+                f"{_device_memory_summary(device)}",
                 flush=True,
             )
     return float(np.mean(losses)) if losses else 0.0
@@ -265,3 +276,24 @@ def _class_weights(labels: np.ndarray) -> torch.Tensor:
     counts[counts == 0.0] = 1.0
     weights = counts.sum() / (len(counts) * counts)
     return torch.tensor(weights, dtype=torch.float32)
+
+
+def _device_memory_summary(device: torch.device) -> str:
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return ""
+    allocated = torch.cuda.memory_allocated(device) / (1024**3)
+    reserved = torch.cuda.memory_reserved(device) / (1024**3)
+    max_allocated = torch.cuda.max_memory_allocated(device) / (1024**3)
+    try:
+        free, total = torch.cuda.mem_get_info(device)
+        free_gb = free / (1024**3)
+        total_gb = total / (1024**3)
+        free_text = f" cuda_free={free_gb:.2f}/{total_gb:.2f}GB"
+    except Exception:
+        free_text = ""
+    return (
+        f" cuda_alloc={allocated:.2f}GB"
+        f" cuda_reserved={reserved:.2f}GB"
+        f" cuda_max_alloc={max_allocated:.2f}GB"
+        f"{free_text}"
+    )
