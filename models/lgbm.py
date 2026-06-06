@@ -51,6 +51,8 @@ class LightGBMModel:
         *,
         feature_columns: list[str],
         split_config: SplitConfig,
+        lightgbm_device_type: str = "cpu",
+        lightgbm_gpu_device_id: int = 0,
     ) -> TrainingResult:
         try:
             from lightgbm import LGBMClassifier
@@ -70,21 +72,26 @@ class LightGBMModel:
                 "Use a larger history window or adjust label thresholds."
             )
 
-        model = LGBMClassifier(
-            objective="multiclass",
-            num_class=3,
-            n_estimators=300,
-            learning_rate=0.03,
-            max_depth=-1,
-            num_leaves=31,
-            subsample=0.85,
-            colsample_bytree=0.85,
-            reg_lambda=1.0,
-            class_weight="balanced",
-            random_state=42,
-            n_jobs=-1,
-            verbosity=-1,
-        )
+        lgbm_params: dict[str, Any] = {
+            "objective": "multiclass",
+            "num_class": 3,
+            "n_estimators": 300,
+            "learning_rate": 0.03,
+            "max_depth": -1,
+            "num_leaves": 31,
+            "subsample": 0.85,
+            "colsample_bytree": 0.85,
+            "reg_lambda": 1.0,
+            "class_weight": "balanced",
+            "random_state": 42,
+            "n_jobs": -1,
+            "verbosity": 1 if lightgbm_device_type != "cpu" else -1,
+            "device_type": lightgbm_device_type,
+        }
+        if lightgbm_device_type != "cpu":
+            lgbm_params["gpu_device_id"] = lightgbm_gpu_device_id
+            lgbm_params["max_bin"] = 63
+        model = LGBMClassifier(**lgbm_params)
         model.fit(
             splits.train[feature_columns],
             y_train,
@@ -117,6 +124,7 @@ class LightGBMModel:
             "feature_columns": feature_columns,
             "label_mapping": LABEL_TO_ID,
             "classes_": [int(value) for value in model.classes_],
+            "lightgbm_params": lgbm_params,
             "train_rows": len(splits.train),
             "validation_rows": len(splits.validation),
             "test_rows": len(splits.test),

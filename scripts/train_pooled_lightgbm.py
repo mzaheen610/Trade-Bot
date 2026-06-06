@@ -58,6 +58,13 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--min-rows", type=int, default=1000)
     parser.add_argument("--no-symbol-feature", action="store_true")
+    parser.add_argument(
+        "--lightgbm-device-type",
+        choices=("cpu", "gpu", "cuda"),
+        default="cpu",
+        help="LightGBM learner device. Use cuda/gpu only with a matching LightGBM build.",
+    )
+    parser.add_argument("--lightgbm-gpu-device-id", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -89,6 +96,8 @@ def main() -> int:
         output_name=args.output_name,
         split_config=SplitConfig(),
         include_symbol_feature=not args.no_symbol_feature,
+        lightgbm_device_type=args.lightgbm_device_type,
+        lightgbm_gpu_device_id=args.lightgbm_gpu_device_id,
     )
     print(f"pooled_model: {result['model_path']}")
     print(f"pooled_metadata: {result['metadata_path']}")
@@ -239,12 +248,20 @@ def train_pooled_lgbm(
     output_name: str,
     split_config: SplitConfig,
     include_symbol_feature: bool = True,
+    lightgbm_device_type: str = "cpu",
+    lightgbm_gpu_device_id: int = 0,
 ) -> dict[str, Any]:
     try:
         from lightgbm import LGBMClassifier
         from sklearn.metrics import accuracy_score, log_loss
     except ImportError as exc:
         raise RuntimeError("LightGBM training dependencies are not installed.") from exc
+
+    _validate_lightgbm_device(
+        LGBMClassifier,
+        lightgbm_device_type=lightgbm_device_type,
+        lightgbm_gpu_device_id=lightgbm_gpu_device_id,
+    )
 
     print(
         f"Preparing pooled LightGBM frame from {len(instruments):,} instruments "
@@ -273,23 +290,31 @@ def train_pooled_lgbm(
 
     print(
         f"Training LightGBM: train={len(train):,}, validation={len(validation):,}, "
-        f"test={len(test):,}, features={len(model_feature_columns):,}",
+        f"test={len(test):,}, features={len(model_feature_columns):,}, "
+        f"device_type={lightgbm_device_type}",
         flush=True,
     )
+    lgbm_params: dict[str, Any] = {
+        "objective": "multiclass",
+        "num_class": 3,
+        "n_estimators": 400,
+        "learning_rate": 0.03,
+        "max_depth": -1,
+        "num_leaves": 31,
+        "subsample": 0.85,
+        "colsample_bytree": 0.85,
+        "reg_lambda": 1.0,
+        "class_weight": "balanced",
+        "random_state": 42,
+        "n_jobs": -1,
+        "verbosity": 1 if lightgbm_device_type != "cpu" else -1,
+        "device_type": lightgbm_device_type,
+    }
+    if lightgbm_device_type != "cpu":
+        lgbm_params["gpu_device_id"] = lightgbm_gpu_device_id
+        lgbm_params["max_bin"] = 63
     model = LGBMClassifier(
-        objective="multiclass",
-        num_class=3,
-        n_estimators=400,
-        learning_rate=0.03,
-        max_depth=-1,
-        num_leaves=31,
-        subsample=0.85,
-        colsample_bytree=0.85,
-        reg_lambda=1.0,
-        class_weight="balanced",
-        random_state=42,
-        n_jobs=-1,
-        verbosity=-1,
+        **lgbm_params,
     )
     model.fit(
         train[model_feature_columns],
@@ -338,6 +363,7 @@ def train_pooled_lgbm(
         "feature_columns": model_feature_columns,
         "base_feature_columns": feature_columns,
         "categorical_features": categorical_features,
+        "lightgbm_params": lgbm_params,
         "label_mapping": LABEL_TO_ID,
         "classes_": [int(value) for value in model.classes_],
         "symbols": [instrument.name for instrument in instruments],
@@ -383,6 +409,48 @@ def train_pooled_lgbm(
         "metadata": metadata,
         "metrics": metrics,
     }
+
+
+def _validate_lightgbm_device(
+    lgbm_classifier: Any,
+    *,
+    lightgbm_device_type: str,
+    lightgbm_gpu_device_id: int,
+) -> None:
+    if lightgbm_device_type == "cpu":
+        return
+
+    try:
+        probe = lgbm_classifier(
+            objective="multiclass",
+            num_class=3,
+            n_estimators=1,
+            min_data_in_leaf=1,
+            min_data_in_bin=1,
+            device_type=lightgbm_device_type,
+            gpu_device_id=lightgbm_gpu_device_id,
+            max_bin=63,
+            verbosity=-1,
+        )
+        probe.fit(
+            np.array(
+                [
+                    [0.0, 0.0],
+                    [0.0, 1.0],
+                    [1.0, 0.0],
+                    [1.0, 1.0],
+                    [2.0, 0.0],
+                    [2.0, 1.0],
+                ],
+                dtype=np.float32,
+            ),
+            np.array([0, 1, 2, 0, 1, 2], dtype=np.int64),
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"LightGBM device_type={lightgbm_device_type!r} is not usable in this runtime. "
+            "Install or build LightGBM with GPU/CUDA support, or set LGBM_DEVICE_TYPE='cpu'."
+        ) from exc
 
 
 def combine_instruments(instruments: list[LoadedInstrument], *, feature_columns: list[str]) -> pd.DataFrame:

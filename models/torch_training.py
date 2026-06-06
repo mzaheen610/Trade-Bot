@@ -28,6 +28,60 @@ class NumpySequenceDataset(Dataset):
         return self.x[index], self.y[index]
 
 
+class FrameSequenceDataset(Dataset):
+    def __init__(
+        self,
+        frame: pd.DataFrame,
+        *,
+        feature_columns: list[str],
+        lookback: int,
+        group_column: str = "symbol",
+        label_column: str = "label",
+    ) -> None:
+        if lookback <= 1:
+            raise ValueError("lookback must be greater than 1")
+        missing = [column for column in feature_columns + [label_column] if column not in frame.columns]
+        if missing:
+            raise ValueError(f"Sequence dataframe missing columns: {missing}")
+
+        self.lookback = lookback
+        self.feature_blocks: list[np.ndarray] = []
+        self.label_blocks: list[np.ndarray] = []
+        self.sequence_counts: list[int] = []
+
+        if group_column in frame.columns:
+            groups = frame.groupby(group_column, sort=False, observed=True)
+        else:
+            groups = [(None, frame)]
+
+        for _, group in groups:
+            ordered = group.sort_index()
+            if len(ordered) < lookback:
+                continue
+            features = np.ascontiguousarray(ordered[feature_columns].to_numpy(dtype=np.float32))
+            labels = ordered[label_column].to_numpy(dtype=np.int64)
+            sequence_count = len(ordered) - lookback + 1
+            self.feature_blocks.append(features)
+            self.label_blocks.append(labels[lookback - 1 :])
+            self.sequence_counts.append(sequence_count)
+
+        if not self.sequence_counts:
+            raise RuntimeError("No sequence arrays could be built for this split.")
+        self.cumulative_counts = np.cumsum(self.sequence_counts)
+        self.labels = np.concatenate(self.label_blocks)
+
+    def __len__(self) -> int:
+        return int(self.cumulative_counts[-1])
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        block_index = int(np.searchsorted(self.cumulative_counts, index, side="right"))
+        previous_count = 0 if block_index == 0 else int(self.cumulative_counts[block_index - 1])
+        local_index = index - previous_count
+        features = self.feature_blocks[block_index][local_index : local_index + self.lookback]
+        label = self.label_blocks[block_index][local_index]
+        return torch.from_numpy(features), torch.tensor(label, dtype=torch.long)
+
+
 @dataclass(frozen=True)
 class TorchTrainingResult:
     model_name: str
@@ -54,32 +108,105 @@ def train_torch_classifier(
     device: torch.device | None = None,
     log_every_batches: int = 0,
 ) -> TorchTrainingResult:
+    train_dataset = NumpySequenceDataset(train_arrays)
+    validation_dataset = NumpySequenceDataset(validation_arrays)
+    return _train_torch_classifier_from_datasets(
+        model=model,
+        model_name=model_name,
+        train_dataset=train_dataset,
+        validation_dataset=validation_dataset,
+        train_labels=train_arrays.y,
+        shuffle_train=False,
+        model_dir=model_dir,
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        num_workers=num_workers,
+        device=device,
+        log_every_batches=log_every_batches,
+    )
+
+
+def train_torch_classifier_from_frames(
+    *,
+    model: nn.Module,
+    model_name: str,
+    train_frame: pd.DataFrame,
+    validation_frame: pd.DataFrame,
+    feature_columns: list[str],
+    lookback: int,
+    model_dir: Path,
+    epochs: int = 20,
+    batch_size: int = 512,
+    learning_rate: float = 1e-3,
+    num_workers: int = 2,
+    device: torch.device | None = None,
+    log_every_batches: int = 0,
+) -> TorchTrainingResult:
+    train_dataset = FrameSequenceDataset(train_frame, feature_columns=feature_columns, lookback=lookback)
+    validation_dataset = FrameSequenceDataset(
+        validation_frame,
+        feature_columns=feature_columns,
+        lookback=lookback,
+    )
+    return _train_torch_classifier_from_datasets(
+        model=model,
+        model_name=model_name,
+        train_dataset=train_dataset,
+        validation_dataset=validation_dataset,
+        train_labels=train_dataset.labels,
+        shuffle_train=True,
+        model_dir=model_dir,
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        num_workers=num_workers,
+        device=device,
+        log_every_batches=log_every_batches,
+    )
+
+
+def _train_torch_classifier_from_datasets(
+    *,
+    model: nn.Module,
+    model_name: str,
+    train_dataset: Dataset,
+    validation_dataset: Dataset,
+    train_labels: np.ndarray,
+    shuffle_train: bool,
+    model_dir: Path,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    num_workers: int,
+    device: torch.device | None,
+    log_every_batches: int,
+) -> TorchTrainingResult:
     model_dir.mkdir(parents=True, exist_ok=True)
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     train_loader = DataLoader(
-        NumpySequenceDataset(train_arrays),
+        train_dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=shuffle_train,
         num_workers=num_workers,
         pin_memory=device.type == "cuda",
     )
     validation_loader = DataLoader(
-        NumpySequenceDataset(validation_arrays),
+        validation_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=device.type == "cuda",
     )
     print(
-        f"{model_name}: device={device}, train_sequences={len(train_arrays.y):,}, "
-        f"validation_sequences={len(validation_arrays.y):,}, batch_size={batch_size}, "
-        f"train_batches={len(train_loader):,}, validation_batches={len(validation_loader):,}"
-        f"{_device_memory_summary(device)}",
+        f"{model_name}: device={device}, train_sequences={len(train_dataset):,}, "
+        f"validation_sequences={len(validation_dataset):,}, batch_size={batch_size}, "
+        f"train_batches={len(train_loader):,}, validation_batches={len(validation_loader):,}",
         flush=True,
     )
 
-    weights = _class_weights(train_arrays.y).to(device)
+    weights = _class_weights(train_labels).to(device)
     criterion = nn.CrossEntropyLoss(weight=weights)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
@@ -102,11 +229,7 @@ def train_torch_classifier(
         print(f"Resumed {model_name} from epoch {start_epoch}", flush=True)
 
     for epoch in range(start_epoch, epochs):
-        print(
-            f"{model_name} epoch={epoch} starting training..."
-            f"{_device_memory_summary(device)}",
-            flush=True,
-        )
+        print(f"{model_name} epoch={epoch} starting training...", flush=True)
         train_loss = _run_epoch(
             model,
             train_loader,
@@ -118,11 +241,7 @@ def train_torch_classifier(
             epoch=epoch,
             log_every_batches=log_every_batches,
         )
-        print(
-            f"{model_name} epoch={epoch} starting validation..."
-            f"{_device_memory_summary(device)}",
-            flush=True,
-        )
+        print(f"{model_name} epoch={epoch} starting validation...", flush=True)
         val_loss, val_accuracy = _evaluate(model, validation_loader, criterion, device=device)
         row = {
             "epoch": epoch,
@@ -134,8 +253,7 @@ def train_torch_classifier(
         print(
             f"{model_name} epoch={epoch} "
             f"train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
-            f"val_accuracy={val_accuracy:.4f}"
-            f"{_device_memory_summary(device)}",
+            f"val_accuracy={val_accuracy:.4f}",
             flush=True,
         )
 
@@ -239,8 +357,7 @@ def _run_epoch(
         ):
             print(
                 f"{model_name} epoch={epoch} train batch "
-                f"{batch_index:,}/{total_batches:,} loss={losses[-1]:.5f}"
-                f"{_device_memory_summary(device)}",
+                f"{batch_index:,}/{total_batches:,} loss={losses[-1]:.5f}",
                 flush=True,
             )
     return float(np.mean(losses)) if losses else 0.0
@@ -276,24 +393,3 @@ def _class_weights(labels: np.ndarray) -> torch.Tensor:
     counts[counts == 0.0] = 1.0
     weights = counts.sum() / (len(counts) * counts)
     return torch.tensor(weights, dtype=torch.float32)
-
-
-def _device_memory_summary(device: torch.device) -> str:
-    if device.type != "cuda" or not torch.cuda.is_available():
-        return ""
-    allocated = torch.cuda.memory_allocated(device) / (1024**3)
-    reserved = torch.cuda.memory_reserved(device) / (1024**3)
-    max_allocated = torch.cuda.max_memory_allocated(device) / (1024**3)
-    try:
-        free, total = torch.cuda.mem_get_info(device)
-        free_gb = free / (1024**3)
-        total_gb = total / (1024**3)
-        free_text = f" cuda_free={free_gb:.2f}/{total_gb:.2f}GB"
-    except Exception:
-        free_text = ""
-    return (
-        f" cuda_alloc={allocated:.2f}GB"
-        f" cuda_reserved={reserved:.2f}GB"
-        f" cuda_max_alloc={max_allocated:.2f}GB"
-        f"{free_text}"
-    )
