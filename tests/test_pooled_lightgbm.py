@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from config import SplitConfig
 from scripts.train_pooled_lightgbm import (
@@ -10,6 +12,7 @@ from scripts.train_pooled_lightgbm import (
     combine_instruments,
     date_based_split,
     shared_feature_columns,
+    stage_processed_feature_files,
 )
 
 
@@ -34,6 +37,37 @@ def test_pooled_split_uses_one_global_calendar_boundary() -> None:
     assert set(splits.train["symbol"]) == {"AAA", "BBB"}
     assert set(splits.validation["symbol"]) == {"AAA", "BBB"}
     assert set(splits.test["symbol"]) == {"AAA", "BBB"}
+
+
+def test_stage_processed_feature_files_copies_matching_parquets(tmp_path: Path) -> None:
+    source_root = tmp_path / "drive" / "processed"
+    staging_root = tmp_path / "local" / "processed"
+    source_root.mkdir(parents=True)
+    (source_root / "AAA_5m_features.parquet").write_text("aaa", encoding="utf-8")
+    (source_root / "BBB_5m_features.parquet").write_text("bbb", encoding="utf-8")
+    (source_root / "ignored.txt").write_text("ignored", encoding="utf-8")
+
+    result = stage_processed_feature_files(source_root, staging_root)
+
+    assert result == staging_root
+    assert sorted(path.name for path in staging_root.iterdir()) == [
+        "AAA_5m_features.parquet",
+        "BBB_5m_features.parquet",
+    ]
+
+
+def test_stage_processed_feature_files_reports_drive_disconnect(tmp_path: Path) -> None:
+    source_root = tmp_path / "drive" / "processed"
+    staging_root = tmp_path / "local" / "processed"
+    source_root.mkdir(parents=True)
+    (source_root / "AAA_5m_features.parquet").write_text("aaa", encoding="utf-8")
+
+    with patch(
+        "scripts.train_pooled_lightgbm.shutil.copy2",
+        side_effect=OSError(107, "Transport endpoint is not connected"),
+    ):
+        with pytest.raises(RuntimeError, match="Google Drive appears disconnected"):
+            stage_processed_feature_files(source_root, staging_root)
 
 
 def _instrument(symbol: str, start: str, periods: int) -> LoadedInstrument:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -148,6 +149,54 @@ def load_instruments(
         if limit is not None and len(loaded) >= limit:
             break
     return loaded
+
+
+def stage_processed_feature_files(
+    source_root: Path,
+    staging_root: Path,
+    *,
+    pattern: str = "*_5m_features.parquet",
+    force_refresh: bool = False,
+    limit: int | None = None,
+) -> Path:
+    """Copy processed feature Parquets to local storage before training.
+
+    Colab Drive is a FUSE mount and can disconnect during many repeated Parquet
+    reads. Staging reads each file once, then trains from local `/content`.
+    """
+    source_root = Path(source_root)
+    staging_root = Path(staging_root)
+    source_files = sorted(
+        path
+        for path in source_root.glob(pattern)
+        if path.is_file() and not path.name.startswith(".")
+    )
+    if limit is not None:
+        source_files = source_files[:limit]
+    if not source_files:
+        raise FileNotFoundError(f"No processed feature files found under {source_root}")
+
+    staging_root.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for source_path in source_files:
+        destination = staging_root / source_path.name
+        if destination.exists() and not force_refresh:
+            copied += 1
+            continue
+        try:
+            shutil.copy2(source_path, destination)
+        except OSError as exc:
+            if getattr(exc, "errno", None) == 107 or "Transport endpoint is not connected" in str(exc):
+                raise RuntimeError(
+                    "Google Drive appears disconnected while staging processed feature files. "
+                    "In Colab, run `from google.colab import drive; "
+                    "drive.mount('/content/drive', force_remount=True)`, then rerun setup."
+                ) from exc
+            raise
+        copied += 1
+
+    print(f"Staged {copied} processed feature files to {staging_root}")
+    return staging_root
 
 
 def train_pooled_lgbm(
