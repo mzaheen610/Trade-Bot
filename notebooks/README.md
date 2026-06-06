@@ -32,3 +32,5 @@ For the Kaggle NIFTY 50 minute dataset, copy the extracted CSV files into Drive 
 Notebook 01 auto-detects `NIFTY 50_5minute.csv`, filters NSE market hours, converts all-zero index volume to synthetic volume, and writes `NIFTY_5m_intraday.parquet` plus daily context. `BANK_NIFTY_data` and `NIFTY_data` folders still work as fallback local formats.
 
 Notebook 01 uses local data for real training. The yfinance 5-minute fallback is only for smoke-testing the pipeline and is not enough for meaningful model training.
+
+If Colab raises `MarketConfig.__init__() got an unexpected keyword argument 'local_intraday_path'`, it is importing an older runtime copy of the repo. Pull the latest commit in Drive, rerun the install cell, then use `Runtime > Restart runtime` before running notebook 01 again.
