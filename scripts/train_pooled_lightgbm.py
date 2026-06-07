@@ -35,6 +35,15 @@ class LoadedInstrument:
 
 
 @dataclass(frozen=True)
+class InstrumentSummary:
+    name: str
+    path: Path
+    rows: int
+    feature_columns: list[str]
+    columns: set[str]
+
+
+@dataclass(frozen=True)
 class DateSplitFrames:
     train: pd.DataFrame
     validation: pd.DataFrame
@@ -121,53 +130,179 @@ def load_instruments(
     limit: int | None,
     progress_every: int = 25,
 ) -> list[LoadedInstrument]:
+    summaries = scan_instruments(
+        processed_root,
+        pattern=pattern,
+        min_rows=min_rows,
+        limit=limit,
+        progress_every=progress_every,
+    )
+    if not summaries:
+        return []
+
+    selected_features = shared_feature_columns_from_summaries(summaries)
+    if not selected_features:
+        print("No shared numeric feature columns found across usable instruments.", flush=True)
+        return []
+
     loaded: list[LoadedInstrument] = []
-    paths = sorted(processed_root.glob(pattern))
-    print(f"Loading up to {limit or len(paths)} processed feature files from {processed_root}", flush=True)
-    for file_index, path in enumerate(paths, start=1):
+    print(
+        f"Loading {len(summaries):,} usable instruments with "
+        f"{len(selected_features):,} shared numeric feature columns.",
+        flush=True,
+    )
+    for file_index, summary in enumerate(summaries, start=1):
         try:
-            frame = pd.read_parquet(path)
+            frame = read_instrument_frame(summary, feature_columns=selected_features)
         except Exception as exc:
-            print(f"Skipping {path.name}: could not read parquet ({exc}).", flush=True)
-            continue
-        if frame.empty:
-            print(f"Skipping {path.name}: empty feature file.", flush=True)
-            continue
-        if "label" not in frame.columns:
-            print(f"Skipping {path.name}: missing label column.", flush=True)
+            print(f"Skipping {summary.path.name}: could not load selected columns ({exc}).", flush=True)
             continue
 
-        frame = frame.copy()
-        frame.index = pd.to_datetime(frame.index)
-        frame = frame.sort_index()
-        if "symbol" not in frame.columns:
-            if "instrument" in frame.columns:
-                frame["symbol"] = frame["instrument"].astype(str)
-            else:
-                frame["symbol"] = symbol_name_from_feature_path(path)
-        frame = frame.dropna(subset=["label"])
-        frame["label"] = frame["label"].astype(int)
         if len(frame) < min_rows:
-            print(f"Skipping {path.name}: only {len(frame):,} rows after cleanup.", flush=True)
+            print(f"Skipping {summary.path.name}: only {len(frame):,} rows after selected-column cleanup.", flush=True)
             continue
 
         loaded.append(
             LoadedInstrument(
-                name=str(frame["symbol"].iloc[0]),
-                path=path,
+                name=summary.name,
+                path=summary.path,
                 frame=frame,
             )
         )
         if progress_every and len(loaded) % progress_every == 0:
             print(
-                f"Loaded {len(loaded):,} usable instruments "
-                f"after scanning {file_index:,}/{len(paths):,} files.",
+                f"Loaded {len(loaded):,}/{len(summaries):,} selected-column instrument frames.",
                 flush=True,
             )
-        if limit is not None and len(loaded) >= limit:
-            break
-    print(f"Loaded {len(loaded):,} usable instruments.", flush=True)
+    print(
+        f"Loaded {len(loaded):,} usable instruments using "
+        f"{len(selected_features):,} shared numeric feature columns.",
+        flush=True,
+    )
     return loaded
+
+
+def scan_instruments(
+    processed_root: Path,
+    *,
+    pattern: str,
+    min_rows: int,
+    limit: int | None,
+    progress_every: int = 25,
+) -> list[InstrumentSummary]:
+    summaries: list[InstrumentSummary] = []
+    paths = sorted(processed_root.glob(pattern))
+    print(f"Scanning up to {limit or len(paths)} processed feature files from {processed_root}", flush=True)
+    for file_index, path in enumerate(paths, start=1):
+        try:
+            row_count, schema_feature_columns, columns = parquet_file_summary(path)
+        except Exception as exc:
+            print(f"Skipping {path.name}: could not read parquet metadata ({exc}).", flush=True)
+            continue
+        if row_count == 0:
+            print(f"Skipping {path.name}: empty feature file.", flush=True)
+            continue
+        if "label" not in columns:
+            print(f"Skipping {path.name}: missing label column.", flush=True)
+            continue
+
+        metadata_columns = [column for column in ("label", "symbol", "instrument") if column in columns]
+        try:
+            metadata = pd.read_parquet(path, columns=metadata_columns)
+        except Exception as exc:
+            print(f"Skipping {path.name}: could not read parquet ({exc}).", flush=True)
+            continue
+        metadata = metadata.dropna(subset=["label"])
+        rows = len(metadata)
+        if rows < min_rows:
+            print(f"Skipping {path.name}: only {rows:,} rows after cleanup.", flush=True)
+            continue
+
+        if "symbol" in metadata.columns:
+            name = str(metadata["symbol"].iloc[0])
+        elif "instrument" in metadata.columns:
+            name = str(metadata["instrument"].iloc[0])
+        else:
+            name = symbol_name_from_feature_path(path)
+
+        summaries.append(
+            InstrumentSummary(
+                name=name,
+                path=path,
+                rows=rows,
+                feature_columns=schema_feature_columns,
+                columns=columns,
+            )
+        )
+        if progress_every and len(summaries) % progress_every == 0:
+            print(
+                f"Scanned {len(summaries):,} usable instruments "
+                f"after checking {file_index:,}/{len(paths):,} files.",
+                flush=True,
+            )
+        if limit is not None and len(summaries) >= limit:
+            break
+    print(f"Scanned {len(summaries):,} usable instruments.", flush=True)
+    return summaries
+
+
+def parquet_file_summary(path: Path) -> tuple[int, list[str], set[str]]:
+    try:
+        import pyarrow.parquet as pq
+        import pyarrow.types as pa_types
+    except ImportError:
+        frame = pd.read_parquet(path)
+        return len(frame), feature_columns(frame), set(frame.columns)
+
+    parquet_file = pq.ParquetFile(path)
+    schema = parquet_file.schema_arrow
+    names = set(schema.names)
+    features = [
+        field.name
+        for field in schema
+        if field.name not in EXCLUDED_FEATURE_COLUMNS
+        and not field.name.startswith("__index_level_")
+        and (
+            pa_types.is_integer(field.type)
+            or pa_types.is_floating(field.type)
+            or pa_types.is_boolean(field.type)
+        )
+    ]
+    return int(parquet_file.metadata.num_rows), features, names
+
+
+def shared_feature_columns_from_summaries(summaries: list[InstrumentSummary]) -> list[str]:
+    common = set(summaries[0].feature_columns)
+    for summary in summaries[1:]:
+        common &= set(summary.feature_columns)
+    return [column for column in summaries[0].feature_columns if column in common]
+
+
+def read_instrument_frame(summary: InstrumentSummary, *, feature_columns: list[str]) -> pd.DataFrame:
+    metadata_columns = [
+        column
+        for column in ("label", "symbol", "instrument")
+        if column in summary.columns
+    ]
+    read_columns = list(dict.fromkeys([*feature_columns, *metadata_columns]))
+    frame = pd.read_parquet(summary.path, columns=read_columns)
+    frame.index = pd.to_datetime(frame.index)
+    frame = frame.sort_index()
+
+    if "symbol" not in frame.columns:
+        if "instrument" in frame.columns:
+            frame["symbol"] = frame["instrument"].astype(str)
+        else:
+            frame["symbol"] = summary.name
+    if "instrument" in frame.columns:
+        frame = frame.drop(columns=["instrument"])
+
+    required = feature_columns + ["label"]
+    frame = frame.dropna(subset=required).copy()
+    frame[feature_columns] = frame[feature_columns].astype(np.float32, copy=False)
+    frame["label"] = frame["label"].astype(np.int8)
+    frame["symbol"] = frame["symbol"].astype("category")
+    return frame[feature_columns + ["label", "symbol"]]
 
 
 def stage_processed_feature_files(
@@ -206,14 +341,16 @@ def stage_processed_feature_files(
     for file_index, source_path in enumerate(source_files, start=1):
         destination = staging_root / source_path.name
         if destination.exists() and not force_refresh:
-            skipped += 1
-            if file_index == 1 or file_index % 25 == 0 or file_index == len(source_files):
-                print(
-                    f"Staging progress: {file_index:,}/{len(source_files):,} "
-                    f"({copied:,} copied, {skipped:,} already existed)",
-                    flush=True,
-                )
-            continue
+            if is_readable_parquet(destination):
+                skipped += 1
+                if file_index == 1 or file_index % 25 == 0 or file_index == len(source_files):
+                    print(
+                        f"Staging progress: {file_index:,}/{len(source_files):,} "
+                        f"({copied:,} copied, {skipped:,} already existed)",
+                        flush=True,
+                    )
+                continue
+            print(f"Restaging unreadable local parquet: {destination.name}", flush=True)
         try:
             shutil.copy2(source_path, destination)
         except OSError as exc:
@@ -240,9 +377,61 @@ def stage_processed_feature_files(
     return staging_root
 
 
+def is_readable_parquet(path: Path) -> bool:
+    try:
+        import pyarrow.parquet as pq
+
+        pq.ParquetFile(path)
+        return True
+    except ImportError:
+        try:
+            with path.open("rb") as handle:
+                if handle.seek(0, 2) < 8:
+                    return False
+                handle.seek(-4, 2)
+                return handle.read(4) == b"PAR1"
+        except OSError:
+            return False
+    except Exception:
+        return False
+
+
 def train_pooled_lgbm(
     instruments: list[LoadedInstrument],
     *,
+    feature_columns: list[str],
+    paths: PathConfig,
+    output_name: str,
+    split_config: SplitConfig,
+    include_symbol_feature: bool = True,
+    lightgbm_device_type: str = "cpu",
+    lightgbm_gpu_device_id: int = 0,
+) -> dict[str, Any]:
+    print(
+        f"Preparing pooled LightGBM frame from {len(instruments):,} instruments "
+        f"and {len(feature_columns):,} base features...",
+        flush=True,
+    )
+    combined = combine_instruments(instruments, feature_columns=feature_columns)
+    print(f"Combined LightGBM frame rows={len(combined):,}. Splitting by calendar date...", flush=True)
+    splits = date_based_split(combined, split_config)
+    return train_pooled_lgbm_from_splits(
+        splits,
+        instruments=instruments,
+        feature_columns=feature_columns,
+        paths=paths,
+        output_name=output_name,
+        split_config=split_config,
+        include_symbol_feature=include_symbol_feature,
+        lightgbm_device_type=lightgbm_device_type,
+        lightgbm_gpu_device_id=lightgbm_gpu_device_id,
+    )
+
+
+def train_pooled_lgbm_from_splits(
+    splits: DateSplitFrames,
+    *,
+    instruments: list[LoadedInstrument],
     feature_columns: list[str],
     paths: PathConfig,
     output_name: str,
@@ -263,14 +452,6 @@ def train_pooled_lgbm(
         lightgbm_gpu_device_id=lightgbm_gpu_device_id,
     )
 
-    print(
-        f"Preparing pooled LightGBM frame from {len(instruments):,} instruments "
-        f"and {len(feature_columns):,} base features...",
-        flush=True,
-    )
-    combined = combine_instruments(instruments, feature_columns=feature_columns)
-    print(f"Combined LightGBM frame rows={len(combined):,}. Splitting by calendar date...", flush=True)
-    splits = date_based_split(combined, split_config)
     categorical_features: list[str] = []
     model_feature_columns = list(feature_columns)
 
